@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Site Limiter</string>
+    <string name="service_label">Site Limiter watcher</string>
+    <string name="service_description">Reads the URL bar of the browsers you choose so Site Limiter can count how long you spend on the sites you have put a daily limit on. Nothing leaves the device.</string>
+</resources>

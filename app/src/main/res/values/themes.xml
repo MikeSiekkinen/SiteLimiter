@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.SiteLimiter" parent="Theme.Material3.DayNight.NoActionBar" />
+
+    <style name="Theme.SiteLimiter.Block" parent="Theme.SiteLimiter">
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowBackground">?attr/colorSurface</item>
+    </style>
+</resources>
