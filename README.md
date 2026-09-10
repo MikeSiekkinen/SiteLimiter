@@ -103,7 +103,7 @@ Galaxy S24+, Android 16, against Brave and Chrome:
 | 0-minute limit (block entirely) | blocks within one tick |
 | Deleting a rule clears its usage/snooze/off | yes |
 | Browser enumeration | exactly 4 real browsers, no junk link handlers |
-| Coexists with another accessibility service | yes, ran alongside Bitwarden |
+| Coexists with another accessibility service | yes, ran alongside a password manager |
 
 Chrome showing the full URL rather than an elided domain is what exposed the
 userinfo-parsing bug now covered by `HostParsingTest`.
