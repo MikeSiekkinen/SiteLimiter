@@ -2,7 +2,7 @@
 
 Pushes, pull requests and manual runs execute the local JVM business-logic tests and build both APK variants. The installable debug APK and JUnit reports are available as workflow artifacts for seven days. Pull requests never receive signing secrets.
 
-Tests cover real decisions: host parsing and domain ownership, local budget-day boundaries including DST, snooze/off-for-today expiration, fractional time accounting, foreground changes and sleep gaps. `UsageClock` discards unobserved background intervals and the interval crossing a reset (at most one normal tick); it never attributes the night to the next day's budget. No Android UI or mock-interaction tests are required.
+Tests cover real decisions: host parsing and domain ownership, local budget-day boundaries including DST, snooze/off-for-today expiration, fractional time accounting, foreground changes and sleep gaps. `UsageClock` discards unobserved background intervals and the interval crossing a reset (at most one normal tick); it never attributes the night to the next day's budget. The integrated fork also tests hard-limit enforcement, deferred settings changes, overlapping rules and reset-period transitions. No Android UI or mock-interaction tests are required.
 
 ## One-time release signing setup
 

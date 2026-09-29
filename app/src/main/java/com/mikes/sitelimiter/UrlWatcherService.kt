@@ -18,8 +18,8 @@ import android.widget.Toast
  * Watches the URL bar of the browsers the user selected, accrues time against the daily
  * budget for any matching domain, and raises [BlockActivity] when the budget runs out.
  *
- * Deliberately dumb about tabs: it tracks "the host the front browser is showing", which is
- * all a productivity nudge needs.
+ * Tracks the host visible in the foreground browser; hidden URL bars remain a detection
+ * limitation for both nudge and hard rules.
  */
 class UrlWatcherService : AccessibilityService() {
 
@@ -101,7 +101,6 @@ class UrlWatcherService : AccessibilityService() {
             foregroundPkg = pkg
         }
 
-
         // Content-change events fire constantly while a page renders; sample them.
         val now = SystemClock.elapsedRealtime()
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
@@ -132,8 +131,7 @@ class UrlWatcherService : AccessibilityService() {
 
     private fun recordHost(host: String?) {
         val interactive = power.isInteractive
-        val charge = usageClock.observe(host, SystemClock.elapsedRealtime(), prefs.today(), interactive)
-        if (charge != null) prefs.matchRule(charge.host)?.let { prefs.addUsage(it.domain, charge.seconds) }
+        prefs.accrue(usageClock, host, SystemClock.elapsedRealtime(), interactive)
         currentHost = if (interactive) host else null
     }
 
@@ -183,20 +181,19 @@ class UrlWatcherService : AccessibilityService() {
 
         flush()
 
-        val rule = prefs.matchRule(host) ?: return
-        if (prefs.blockingSuppressed(rule.domain)) return
-
-        val used = prefs.usedSeconds(rule.domain)
-        if (used >= rule.limitSeconds) {
-            block(rule, used)
-        } else if (rule.limitSeconds - used <= WARN_SECONDS) {
-            warnOnce(rule)
+        val blocked = prefs.blockingRule(host)
+        if (blocked != null) {
+            block(blocked, prefs.usedSeconds(blocked.domain), host)
+        } else {
+            prefs.matchingRules(host).filterNot { prefs.blockingSuppressed(it.domain) }.forEach { rule ->
+                if (rule.limitSeconds - prefs.usedSeconds(rule.domain) <= WARN_SECONDS) warnOnce(rule)
+            }
         }
     }
 
     /** Clears per-day state and prunes stale counters when the budget day rolls over. */
     private fun rollDayIfNeeded() {
-        val day = prefs.today()
+        val day = prefs.snapshot().endsAt.toString()
         if (day == currentDay) return
         currentDay = day
         warned.clear()
@@ -209,7 +206,7 @@ class UrlWatcherService : AccessibilityService() {
         Toast.makeText(this, "$left min left on ${rule.domain}", Toast.LENGTH_LONG).show()
     }
 
-    private fun block(rule: Rule, usedSeconds: Int) {
+    private fun block(rule: Rule, usedSeconds: Int, host: String) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) return
         lastBlockMs = now
@@ -218,6 +215,7 @@ class UrlWatcherService : AccessibilityService() {
             val intent = Intent(this, BlockActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 .putExtra(BlockActivity.EXTRA_DOMAIN, rule.domain)
+                .putExtra(BlockActivity.EXTRA_HOST, host)
                 .putExtra(BlockActivity.EXTRA_USED, usedSeconds)
                 .putExtra(BlockActivity.EXTRA_LIMIT, rule.limitSeconds)
             try {

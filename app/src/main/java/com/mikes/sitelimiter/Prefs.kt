@@ -5,157 +5,119 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.ZoneId
 
-data class Rule(val domain: String, val limitSeconds: Int)
-
-/**
- * All state lives in one SharedPreferences file. No database, no network, no analytics.
- *
- * Keys:
- *   rules            JSON array of {domain, limit}
- *   browsers         JSON array of package names to watch
- *   reset_hour       int, local hour the daily budget rolls over (0 = midnight)
- *   usage:<day>:<domain>   seconds spent, day is the yyyy-MM-dd of the *budget* day
- *   snooze:<domain>        epoch millis until which blocking is suppressed
- *   off:<domain>           budget-day string on which blocking is off entirely
- */
+/** Private, local persistence. Policy reads always refresh from disk-backed preferences so
+ * the activity and accessibility service cannot act on stale rule or lock snapshots. */
 class Prefs(ctx: Context) {
-
     private val sp = ctx.applicationContext.getSharedPreferences("sitelimiter", Context.MODE_PRIVATE)
+    private val zone get() = ZoneId.systemDefault()
 
-    // ---------------- rules ----------------
-
-    fun rules(): List<Rule> {
-        val raw = sp.getString(KEY_RULES, null) ?: return emptyList()
-        return runCatching {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                Rule(o.getString("domain"), o.getInt("limit"))
-            }
-        }.getOrDefault(emptyList())
+    fun snapshot(now: Long = System.currentTimeMillis()): LimitState {
+        val raw = sp.getString("state_v2", null)
+        val before = if (raw == null) migrate(now) else decode(JSONObject(raw))
+        val after = LimitPolicy.refresh(before, now, zone)
+        if (raw == null || before != after) store(after)
+        return after
     }
 
-    fun saveRules(rules: List<Rule>) {
-        val arr = JSONArray()
-        rules.forEach { arr.put(JSONObject().put("domain", it.domain).put("limit", it.limitSeconds)) }
-        sp.edit().putString(KEY_RULES, arr.toString()).apply()
+    private fun change(action: (LimitState, Long, ZoneId) -> LimitChange): ChangeResult {
+        val result = action(snapshot(), System.currentTimeMillis(), zone)
+        store(result.state)
+        return result.result
     }
 
-    /** Adds, or updates the limit if the domain is already present. */
-    fun upsertRule(domain: String, limitSeconds: Int) {
-        val normalized = normalizeDomain(domain) ?: return
-        val next = rules().filter { it.domain != normalized } + Rule(normalized, limitSeconds)
-        saveRules(next.sortedBy { it.domain })
+    fun rules(): List<Rule> = snapshot().rules
+    fun matchingRules(host: String): List<Rule> = rules().filter { it.matches(host) }
+    fun matchRule(host: String): Rule? = matchingRules(host).firstOrNull()
+    fun blockingRule(host: String): Rule? = LimitPolicy.blockingRule(snapshot(), host, System.currentTimeMillis())
+
+    fun upsertRule(domain: String, limitSeconds: Int, mode: RuleMode = RuleMode.NUDGE): ChangeResult {
+        val normalized = normalizeDomain(domain) ?: return ChangeResult.REJECTED
+        if (limitSeconds < 0) return ChangeResult.REJECTED
+        return change { s, now, z -> LimitPolicy.changeRule(s, normalized, Rule(normalized, limitSeconds, mode), now, z) }
     }
-
-    fun deleteRule(domain: String) {
-        saveRules(rules().filter { it.domain != domain })
-        sp.edit()
-            .apply { sp.all.keys.filter { it.startsWith("usage:") && it.endsWith(":$domain") }.forEach { remove(it) } }
-            .remove(keySnooze(domain))
-            .remove(keyOff(domain))
-            .remove(keyUsage(today(), domain))
-            .apply()
-    }
-
-    /** The rule governing a host, treating subdomains as part of the parent's budget. */
-    fun matchRule(host: String): Rule? =
-        rules().firstOrNull { BudgetLogic.matches(host, it.domain) }
-
-    // ---------------- usage ----------------
-
-    /** The budget day, shifted by the configured reset hour. */
-    fun today(nowMs: Long = System.currentTimeMillis()): String =
-        BudgetLogic.day(nowMs, resetHour(), ZoneId.systemDefault())
-
-    fun usedSeconds(domain: String): Int = sp.getInt(keyUsage(today(), domain), 0)
-
-    fun addUsage(domain: String, seconds: Int) {
-        if (seconds <= 0) return
-        val key = keyUsage(today(), domain)
-        sp.edit().putInt(key, sp.getInt(key, 0) + seconds).apply()
-    }
-
-    fun resetUsage(domain: String) {
-        sp.edit().remove(keyUsage(today(), domain)).apply()
-    }
-
-    /** Retain only the current day's counters and still-active exceptions for existing rules. */
-    fun pruneOldUsage() {
-        val day = today()
+    fun deleteRule(domain: String): ChangeResult = change { s, now, z -> LimitPolicy.changeRule(s, domain, null, now, z) }
+    fun today(nowMs: Long = System.currentTimeMillis()): String = LimitPolicy.day(nowMs, resetHour(), zone)
+    fun usedSeconds(domain: String): Int = snapshot().usage[domain] ?: 0
+    fun addUsage(domain: String, seconds: Int) { store(LimitPolicy.addUsage(snapshot(), domain, seconds, System.currentTimeMillis(), zone)) }
+    fun addHostUsage(host: String, seconds: Int) { store(LimitPolicy.addHostUsage(snapshot(), host, seconds, System.currentTimeMillis(), zone)) }
+    /** Sample and credit the same budget period, even if a reset occurs during this call. */
+    fun accrue(clock: UsageClock, host: String?, elapsed: Long, interactive: Boolean) {
         val now = System.currentTimeMillis()
-        val domains = rules().map { it.domain }.toSet()
-        val stale = sp.all.keys.filter { key ->
-            when {
-                key.startsWith("usage:") -> !key.startsWith("usage:$day:") || key.substringAfterLast(':') !in domains
-                key.startsWith("snooze:") -> key.removePrefix("snooze:") !in domains || sp.getLong(key, 0) <= now
-                key.startsWith("off:") -> key.removePrefix("off:") !in domains || sp.getString(key, null) != day
-                else -> false
-            }
-        }
-        if (stale.isNotEmpty()) sp.edit().apply { stale.forEach { remove(it) } }.apply()
+        val state = snapshot(now)
+        val charge = clock.observe(host, elapsed, state.endsAt.toString(), interactive) ?: return
+        store(LimitPolicy.addHostUsage(state, charge.host, charge.seconds, now, zone))
+    }
+    fun resetUsage(domain: String): ChangeResult = change { s, now, z -> LimitPolicy.resetUsage(s, domain, now, z) }
+    fun pruneOldUsage() { snapshot() }
+    fun snoozeUntil(domain: String): Long = snapshot().snoozes[domain] ?: 0
+    fun snooze(domain: String, minutes: Int): ChangeResult = change { s, now, z -> LimitPolicy.snooze(s, domain, minutes, now, z) }
+    fun isOffToday(domain: String): Boolean = domain in snapshot().offToday
+    fun turnOffToday(domain: String): ChangeResult = change { s, now, z -> LimitPolicy.turnOffToday(s, domain, now, z) }
+    fun blockingSuppressed(domain: String): Boolean {
+        val s = snapshot()
+        val rule = s.rules.firstOrNull { it.domain == domain } ?: return false
+        return LimitPolicy.suppressed(s, rule, System.currentTimeMillis())
+    }
+    fun browsers(): Set<String> = snapshot().browsers
+    fun saveBrowsers(pkgs: Set<String>): ChangeResult = change { s, now, z -> LimitPolicy.changeBrowsers(s, pkgs, now, z) }
+    fun resetHour(): Int = snapshot().resetHour
+    fun saveResetHour(hour: Int): ChangeResult = change { s, now, z -> LimitPolicy.changeResetHour(s, hour, now, z) }
+    fun cancelPendingChanges() { store(snapshot().copy(pendingRules = emptyMap(), pendingBrowsers = null, pendingResetHour = null)) }
+
+    /** One-time migration keeps existing rules, today's usage, snoozes and browser selection. */
+    private fun migrate(now: Long): LimitState {
+        val hour = sp.getInt("reset_hour", 0).coerceIn(0, 23)
+        val day = LimitPolicy.day(now, hour, zone)
+        val rules = objects(JSONArray(sp.getString("rules", "[]"))).map { readRule(it) }
+        return LimitState(
+            rules = rules, resetHour = hour,
+            browsers = sp.getString("browsers", null)?.let { strings(JSONArray(it)) } ?: Browsers.DEFAULT_PACKAGES,
+            usage = rules.associate { it.domain to sp.getInt("usage:$day:${it.domain}", 0) },
+            snoozes = rules.associate { it.domain to sp.getLong("snooze:${it.domain}", 0) },
+            offToday = rules.filter { sp.getString("off:${it.domain}", null) == day }.map { it.domain }.toSet(),
+        )
     }
 
-    // ---------------- snooze / off ----------------
-
-    fun snoozeUntil(domain: String): Long = sp.getLong(keySnooze(domain), 0L)
-
-    fun snooze(domain: String, minutes: Int) {
-        sp.edit().putLong(keySnooze(domain), System.currentTimeMillis() + minutes * 60_000L).apply()
+    private fun store(s: LimitState) {
+        val o = JSONObject().put("rules", JSONArray().apply { s.rules.forEach { put(writeRule(it)) } })
+            .put("browsers", JSONArray(s.browsers.sorted())).put("resetHour", s.resetHour)
+            .put("day", s.day).put("endsAt", s.endsAt).put("usage", JSONObject(s.usage))
+            .put("snoozes", JSONObject(s.snoozes)).put("offToday", JSONArray(s.offToday.sorted()))
+            .put("locked", JSONArray(s.locked.sorted()))
+            .put("pendingRules", JSONArray().apply { s.pendingRules.forEach { (domain, rule) ->
+                put(rule?.let { writeRule(it) } ?: JSONObject().put("domain", domain).put("delete", true))
+            } })
+        s.pendingBrowsers?.let { o.put("pendingBrowsers", JSONArray(it.sorted())) }
+        s.pendingResetHour?.let { o.put("pendingResetHour", it) }
+        // Remove migrated legacy keys as well as stale counters in a single atomic edit.
+        sp.edit().clear().putString("state_v2", o.toString()).apply()
     }
 
-    fun isOffToday(domain: String): Boolean = sp.getString(keyOff(domain), null) == today()
+    private fun decode(o: JSONObject): LimitState = LimitState(
+        rules = objects(o.getJSONArray("rules")).map { readRule(it) },
+        browsers = strings(o.getJSONArray("browsers")), resetHour = o.getInt("resetHour"),
+        day = o.getString("day"), endsAt = o.getLong("endsAt"),
+        usage = o.getJSONObject("usage").let { map -> map.keys().asSequence().associateWith { map.getInt(it) } },
+        snoozes = o.getJSONObject("snoozes").let { map -> map.keys().asSequence().associateWith { map.getLong(it) } },
+        offToday = strings(o.getJSONArray("offToday")), locked = strings(o.getJSONArray("locked")),
+        pendingRules = objects(o.getJSONArray("pendingRules")).associate { it.getString("domain") to if (it.optBoolean("delete")) null else readRule(it) },
+        pendingBrowsers = o.optJSONArray("pendingBrowsers")?.let { strings(it) },
+        pendingResetHour = if (o.has("pendingResetHour")) o.getInt("pendingResetHour") else null,
+    )
 
-    fun turnOffToday(domain: String) {
-        sp.edit().putString(keyOff(domain), today()).apply()
-    }
-
-    /** True when the limit should not be enforced right now, even though it has been exceeded. */
-    fun blockingSuppressed(domain: String): Boolean =
-        BudgetLogic.suppressed(today(), sp.getString(keyOff(domain), null), snoozeUntil(domain), System.currentTimeMillis())
-
-    // ---------------- browsers ----------------
-
-    fun browsers(): Set<String> {
-        val raw = sp.getString(KEY_BROWSERS, null) ?: return Browsers.DEFAULT_PACKAGES
-        return runCatching {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { arr.getString(it) }.toSet()
-        }.getOrDefault(Browsers.DEFAULT_PACKAGES)
-    }
-
-    fun saveBrowsers(pkgs: Set<String>) {
-        val arr = JSONArray()
-        pkgs.sorted().forEach { arr.put(it) }
-        sp.edit().putString(KEY_BROWSERS, arr.toString()).apply()
-    }
-
-    // ---------------- reset hour ----------------
-
-    fun resetHour(): Int = sp.getInt(KEY_RESET_HOUR, 0)
-
-    fun saveResetHour(hour: Int) {
-        sp.edit().putInt(KEY_RESET_HOUR, hour.coerceIn(0, 23)).apply()
-    }
+    private fun readRule(o: JSONObject) = Rule(o.getString("domain"), o.getInt("limit"),
+        if (o.optBoolean("hard", false)) RuleMode.HARD else RuleMode.NUDGE)
+    private fun writeRule(r: Rule) = JSONObject().put("domain", r.domain).put("limit", r.limitSeconds).put("hard", r.mode == RuleMode.HARD)
+    private fun objects(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
+    private fun strings(a: JSONArray): Set<String> = (0 until a.length()).map { a.getString(it) }.toSet()
 
     companion object {
-        private const val KEY_RULES = "rules"
-        private const val KEY_BROWSERS = "browsers"
-        private const val KEY_RESET_HOUR = "reset_hour"
-
-        private fun keyUsage(day: String, domain: String) = "usage:$day:$domain"
-        private fun keySnooze(domain: String) = "snooze:$domain"
-        private fun keyOff(domain: String) = "off:$domain"
-
-        /** Turns whatever the user typed ("https://www.Reddit.com/r/x") into "reddit.com". */
         fun normalizeDomain(input: String): String? {
             var t = input.trim().lowercase()
             if (t.isEmpty()) return null
             if ("://" in t) t = t.substringAfter("://")
             t = t.substringBefore('/').substringBefore('?').substringBefore('#')
-            t = t.substringAfter('@')
-            t = t.substringBefore(':')
-            t = t.removePrefix("www.")
+            t = t.substringAfter('@').substringBefore(':').removePrefix("www.")
             return if (Browsers.HOST_RE.matches(t)) t else null
         }
     }
