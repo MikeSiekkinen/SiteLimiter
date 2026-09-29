@@ -50,9 +50,19 @@ object LimitPolicy {
                 else local.toLocalDate().plusDays(1).atTime(hour, 0).atZone(zone)).toInstant().toEpochMilli()
     }
 
+    /** Longest a budget period can legitimately run: a day that gains an hour at a DST change. */
+    const val MAX_PERIOD_MS = 25 * 3_600_000L
+
+    /** True while [state]'s period is current, so it can be used without [refresh]. */
+    fun periodCurrent(state: LimitState, now: Long): Boolean =
+        now < state.endsAt && state.endsAt - now <= MAX_PERIOD_MS
+
     fun refresh(state: LimitState, now: Long, zone: ZoneId): LimitState {
         var s = state
-        if (s.endsAt == 0L) {
+        // No period yet, or one ending further ahead than any period can, which only happens when
+        // the clock moved back. Re-anchor to the next real reset but keep usage, locks and
+        // scheduled changes: setting the clock back must neither freeze the period nor lift a limit.
+        if (s.endsAt == 0L || s.endsAt - now > MAX_PERIOD_MS) {
             s = s.copy(day = day(now, s.resetHour, zone), endsAt = nextReset(now, s.resetHour, zone))
         } else if (now >= s.endsAt) {
             val rules = s.rules.associateBy { it.domain }.toMutableMap()
