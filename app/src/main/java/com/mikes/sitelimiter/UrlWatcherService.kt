@@ -33,15 +33,10 @@ class UrlWatcherService : AccessibilityService() {
     private var browsers: Set<String> = emptySet()
     private var filteredBrowsers: Set<String>? = null
 
-    /** Package of the window currently in front. */
-    private var foregroundPkg: String? = null
-
-    /** Host the front browser is showing, or null when we are not in a browser. */
-    private var currentHost: String? = null
-
-    private val usageClock = UsageClock(MAX_ACCRUAL_MS)
+    private val tracker = HostTracker(MAX_ACCRUAL_MS)
     private var lastExtractMs = 0L
     private var lastFallbackScanMs = 0L
+    private var lastFallbackScanPkg: String? = null
     private var lastBlockMs = 0L
 
     /** Domains already warned about today, so the nudge fires once. */
@@ -95,10 +90,9 @@ class UrlWatcherService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         if (pkg !in browsers || activePackage() != pkg) return
 
-        if (pkg != foregroundPkg) {
+        if (pkg != tracker.browserPackage) {
             // The transition time is unknown; discard the unobserved interval.
             stopAccruing()
-            foregroundPkg = pkg
         }
 
         // Content-change events fire constantly while a page renders; sample them.
@@ -108,10 +102,7 @@ class UrlWatcherService : AccessibilityService() {
         ) return
         lastExtractMs = now
 
-        val host = extractHost(pkg)
-        if (host != null && host != currentHost) {
-            recordHost(host)
-        }
+        recordHost(pkg, extractHost(pkg))
         // The event already told us the foreground package, so skip the extra window lookup.
         tick(verifyForeground = false)
     }
@@ -129,15 +120,11 @@ class UrlWatcherService : AccessibilityService() {
 
     // ---------------- time accounting ----------------
 
-    private fun recordHost(host: String?) {
-        val interactive = power.isInteractive
-        prefs.accrue(usageClock, host, SystemClock.elapsedRealtime(), interactive)
-        currentHost = if (interactive) host else null
+    private fun recordHost(pkg: String?, observation: HostObservation) {
+        prefs.accrue(tracker, pkg, observation, SystemClock.elapsedRealtime(), power.isInteractive)
     }
 
-    private fun flush() = recordHost(currentHost)
-
-    private fun stopAccruing() = recordHost(null)
+    private fun stopAccruing() = recordHost(null, HostObservation.WindowUnavailable)
 
     /**
      * @param verifyForeground re-read the active window to confirm what is really in front.
@@ -157,15 +144,7 @@ class UrlWatcherService : AccessibilityService() {
         // alone is not: opening the notification shade makes systemui the foreground package,
         // and dismissing it does not reliably produce a new state-change event for the browser,
         // so a static page would stop being counted until something else happened to fire.
-        if (verifyForeground) {
-            val active = activePackage()
-            if (active != foregroundPkg) {
-                stopAccruing()
-                foregroundPkg = active
-            }
-        }
-
-        val pkg = foregroundPkg
+        val pkg = if (verifyForeground) activePackage() else tracker.browserPackage
         if (pkg == null || pkg !in browsers) {
             stopAccruing()
             return
@@ -173,13 +152,8 @@ class UrlWatcherService : AccessibilityService() {
 
         // Poll even after filtering non-browser events: a static page may not emit a new
         // event after the user switches back from another app or the notification shade.
-        val detected = extractHost(pkg)
-        if (detected != null && detected != currentHost) {
-            recordHost(detected)
-        }
-        val host = currentHost ?: return
-
-        flush()
+        recordHost(pkg, extractHost(pkg))
+        val host = tracker.host ?: return
 
         val blocked = prefs.blockingRule(host)
         if (blocked != null) {
@@ -248,19 +222,17 @@ class UrlWatcherService : AccessibilityService() {
         null
     }
 
-    private fun extractHost(pkg: String): String? {
-        val root = activeRoot() ?: return null
+    private fun extractHost(pkg: String): HostObservation {
+        val root = activeRoot() ?: return HostObservation.WindowUnavailable
         try {
-            if (root.packageName?.toString() != pkg) return null
+            if (root.packageName?.toString() != pkg) return HostObservation.WindowUnavailable
 
             for (id in Browsers.urlBarIds(pkg)) {
                 val nodes = root.findAccessibilityNodeInfosByViewId(id) ?: continue
                 try {
                     for (node in nodes) {
-                        // A focused omnibox holds what the user is typing, not the current page.
-                        if (node.isFocused) continue
-                        Browsers.hostFromBarText(node.text)?.let { return it }
-                        Browsers.hostFromBarText(node.contentDescription)?.let { return it }
+                        if (!node.isVisibleToUser) continue
+                        return Browsers.observeUrlBar(node.text, node.contentDescription, node.isFocused)
                     }
                 } finally {
                     nodes.forEach { recycleQuietly(it) }
@@ -270,15 +242,18 @@ class UrlWatcherService : AccessibilityService() {
             // Unknown browser, or the toolbar is hidden because the page is scrolled. The scan
             // is the expensive path, so rate-limit it hard.
             val now = SystemClock.elapsedRealtime()
-            if (now - lastFallbackScanMs < FALLBACK_SCAN_INTERVAL_MS) return null
+            if (pkg == lastFallbackScanPkg && now - lastFallbackScanMs < FALLBACK_SCAN_INTERVAL_MS) {
+                return HostObservation.ToolbarUnavailable
+            }
             lastFallbackScanMs = now
+            lastFallbackScanPkg = pkg
             return scanForUrlBar(root)
         } finally {
             recycleQuietly(root)
         }
     }
 
-    private fun scanForUrlBar(root: AccessibilityNodeInfo): String? {
+    private fun scanForUrlBar(root: AccessibilityNodeInfo): HostObservation {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         // Nodes this scan obtained and therefore owns. The root belongs to the caller and must
         // not be recycled here, or the caller's own recycle becomes a double free.
@@ -294,19 +269,19 @@ class UrlWatcherService : AccessibilityService() {
                 val viewId = node.viewIdResourceName
                 if (viewId != null &&
                     Browsers.URL_BAR_ID_SUFFIXES.any { viewId.endsWith(it) } &&
-                    !node.isFocused
+                    node.isVisibleToUser
                 ) {
-                    Browsers.hostFromBarText(node.text)?.let { return it }
-                    Browsers.hostFromBarText(node.contentDescription)?.let { return it }
+                    return Browsers.observeUrlBar(node.text, node.contentDescription, node.isFocused)
                 }
 
                 for (i in 0 until node.childCount) {
+                    if (owned.size >= MAX_SCAN_NODES - 1) break
                     val child = node.getChild(i) ?: continue
                     owned.add(child)
                     queue.add(child)
                 }
             }
-            return null
+            return HostObservation.ToolbarUnavailable
         } finally {
             owned.forEach { recycleQuietly(it) }
         }

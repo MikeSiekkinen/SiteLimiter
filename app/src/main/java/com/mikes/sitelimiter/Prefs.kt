@@ -42,10 +42,10 @@ class Prefs(ctx: Context) {
     fun addUsage(domain: String, seconds: Int) { store(LimitPolicy.addUsage(snapshot(), domain, seconds, System.currentTimeMillis(), zone)) }
     fun addHostUsage(host: String, seconds: Int) { store(LimitPolicy.addHostUsage(snapshot(), host, seconds, System.currentTimeMillis(), zone)) }
     /** Sample and credit the same budget period, even if a reset occurs during this call. */
-    fun accrue(clock: UsageClock, host: String?, elapsed: Long, interactive: Boolean) {
+    fun accrue(tracker: HostTracker, pkg: String?, observation: HostObservation, elapsed: Long, interactive: Boolean) {
         val now = System.currentTimeMillis()
         val state = snapshot(now)
-        val charge = clock.observe(host, elapsed, state.endsAt.toString(), interactive) ?: return
+        val charge = tracker.observe(pkg, observation, elapsed, state.endsAt.toString(), interactive) ?: return
         store(LimitPolicy.addHostUsage(state, charge.host, charge.seconds, now, zone))
     }
     fun resetUsage(domain: String): ChangeResult = change { s, now, z -> LimitPolicy.resetUsage(s, domain, now, z) }

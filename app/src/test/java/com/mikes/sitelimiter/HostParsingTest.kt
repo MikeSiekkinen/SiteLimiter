@@ -96,4 +96,26 @@ class HostParsingTest {
         val seen = Browsers.hostFromBarText("www.reddit.com")
         assertEquals(rule, seen)
     }
+
+    @Test
+    fun `schemes inside a query do not replace the actual host`() {
+        assertEquals("reddit.com", Browsers.hostFromBarText("reddit.com/?next=https://other.com"))
+    }
+
+    @Test
+    fun `internal and local URLs are not web pages`() {
+        for (url in listOf("chrome://example.com", "file://example.com/path", "about:blank", "chrome://newtab")) {
+            assertNull(url, Browsers.hostFromBarText(url))
+        }
+    }
+
+    @Test
+    fun `URL observations distinguish page text editing and empty bars`() {
+        assertEquals(HostObservation.Editing, Browsers.observeUrlBar("reddit.com", null, true))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar("", "Search or type URL", false))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar(null, null, false))
+        assertEquals(HostObservation.WebPage("reddit.com"), Browsers.observeUrlBar(null, "reddit.com", false))
+        assertEquals(HostObservation.WebPage("reddit.com"), Browsers.observeUrlBar("reddit.com", "Address", false))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar("about:blank", "reddit.com", false))
+    }
 }

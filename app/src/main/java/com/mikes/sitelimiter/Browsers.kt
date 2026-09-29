@@ -54,12 +54,15 @@ object Browsers {
     val URL_BAR_ID_SUFFIXES = listOf(
         ":id/url_bar",
         ":id/mozac_browser_toolbar_url_view",
+        ":id/url_bar_title",
         ":id/location_bar_edit_text",
+        ":id/sbrowser_url_bar",
         ":id/omnibarTextInput",
         ":id/url_field",
     )
 
     val HOST_RE = Regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+    private val SCHEME_RE = Regex("^[a-z][a-z0-9+.-]*://")
 
     /**
      * Pulls a bare host out of whatever the URL bar is displaying. Chromium usually shows an
@@ -69,7 +72,10 @@ object Browsers {
     fun hostFromBarText(raw: CharSequence?): String? {
         var t = raw?.toString()?.trim()?.lowercase() ?: return null
         if (t.isEmpty() || ' ' in t) return null
-        if ("://" in t) t = t.substringAfter("://")
+        SCHEME_RE.find(t)?.let { scheme ->
+            if (scheme.value != "https://" && scheme.value != "http://") return null
+            t = t.substring(scheme.value.length)
+        }
         // Cut the path/query FIRST. Chrome shows full URLs in the omnibox, so a query such as
         // "?email=a@b.com" would otherwise make the userinfo strip below swallow the real host
         // and report b.com.
@@ -78,6 +84,13 @@ object Browsers {
         t = t.substringBefore(':')  // port
         t = t.removePrefix("www.")
         return if (HOST_RE.matches(t)) t else null
+    }
+
+    /** An observed, empty bar is different from a toolbar missing from the accessibility tree. */
+    fun observeUrlBar(text: CharSequence?, description: CharSequence?, focused: Boolean): HostObservation {
+        if (focused) return HostObservation.Editing
+        val raw = text?.takeIf { it.isNotBlank() } ?: description
+        return hostFromBarText(raw)?.let { HostObservation.WebPage(it) } ?: HostObservation.NoWebPage
     }
 
     data class BrowserApp(val pkg: String, val label: String)

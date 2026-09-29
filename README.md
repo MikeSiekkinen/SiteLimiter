@@ -86,7 +86,10 @@ Or copy the APK to the phone and tap it.
 - The active window, not event ordering, is the authoritative answer to "which app is
   in front" — checked once per timer tick. Event ordering alone loses the browser when
   the notification shade opens and never picks it back up on a static page.
-- A focused URL bar is ignored: its text is what you are typing, not the page.
+- Tracking pauses while the URL bar is focused: its text is what you are typing,
+  not the page. A visible empty bar or internal page clears the previous host.
+  Switching browsers also clears it; a missing toolbar only preserves the host
+  within the same browser.
 - You get a "5 min left" toast once per day per domain before the wall. At most one
   warning appears per check, most specific first; exhausted budgets take priority.
 - Budgets roll over at the hour you configure. Set it to 4 if your day genuinely
@@ -154,6 +157,7 @@ The service subscribes only to selected browser packages. An empty selection doe
 | File | Role |
 | --- | --- |
 | `UrlWatcherService.kt` | Accessibility service: URL extraction, time accounting, blocking |
+| `HostTracker.kt` | Browser-scoped host state and usage-clock observations |
 | `Browsers.kt` | Browser packages, per-browser URL-bar IDs, host parsing |
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
