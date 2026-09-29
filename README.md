@@ -32,8 +32,8 @@ Toolchain (install JDK 21 and the Android SDK; set `JAVA_HOME` and `ANDROID_HOME
 # -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`assembleRelease` also works and is signed with the debug key, since this is
-sideload-only and never goes near Play.
+`assembleRelease` creates an unsigned release APK. The release workflow signs it
+with a permanent private key. See [release setup](docs/RELEASING.md).
 
 ## Install
 
@@ -167,3 +167,7 @@ to verify, so the safe side was chosen.
 ## Dependency versions
 
 Stable versions verified against Google Maven and Maven Central on 2026-09-29: AndroidX Core 1.19.1 (includes the former core-ktx extensions), AppCompat 1.8.0, Material 1.14.0, and JUnit 4.13.2, the latest release of the existing `junit:junit` artifact. No preview versions or dynamic version selectors are used. The Gradle distribution is verified with its official SHA-256 checksum.
+
+## Continuous integration
+
+[Android tests and APK](.github/workflows/android.yml) runs the business-logic tests and builds APKs on pushes and pull requests. Publishing a release attaches a signed APK and checksum to that release. A manual signing check tests the same signing path without publishing. See [release setup](docs/RELEASING.md).

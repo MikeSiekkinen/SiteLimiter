@@ -3,7 +3,6 @@ package com.mikes.sitelimiter
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import java.time.Instant
 import java.time.ZoneId
 
 data class Rule(val domain: String, val limitSeconds: Int)
@@ -60,17 +59,13 @@ class Prefs(ctx: Context) {
 
     /** The rule governing a host, treating subdomains as part of the parent's budget. */
     fun matchRule(host: String): Rule? =
-        rules().firstOrNull { host == it.domain || host.endsWith("." + it.domain) }
+        rules().firstOrNull { BudgetLogic.matches(host, it.domain) }
 
     // ---------------- usage ----------------
 
     /** The budget day, shifted by the configured reset hour. */
     fun today(nowMs: Long = System.currentTimeMillis()): String =
-        Instant.ofEpochMilli(nowMs)
-            .atZone(ZoneId.systemDefault())
-            .minusHours(resetHour().toLong())
-            .toLocalDate()
-            .toString()
+        BudgetLogic.day(nowMs, resetHour(), ZoneId.systemDefault())
 
     fun usedSeconds(domain: String): Int = sp.getInt(keyUsage(today(), domain), 0)
 
@@ -108,7 +103,7 @@ class Prefs(ctx: Context) {
 
     /** True when the limit should not be enforced right now, even though it has been exceeded. */
     fun blockingSuppressed(domain: String): Boolean =
-        isOffToday(domain) || System.currentTimeMillis() < snoozeUntil(domain)
+        BudgetLogic.suppressed(today(), sp.getString(keyOff(domain), null), snoozeUntil(domain), System.currentTimeMillis())
 
     // ---------------- browsers ----------------
 
