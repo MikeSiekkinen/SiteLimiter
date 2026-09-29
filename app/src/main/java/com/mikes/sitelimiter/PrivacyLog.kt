@@ -4,7 +4,7 @@ import android.util.Log
 
 /** Only fixed events and code locations may cross the app's logging boundary. */
 internal object PrivacyLog {
-    enum class Event { CONNECTED, TICK_FAILED, FLUSH_FAILED, EVENT_FAILED, BLOCK_FAILED, ROOT_FAILED, BLANK_TAB_FAILED, BROWSER_EXIT_CLICK, BROWSER_EXIT_HOME }
+    enum class Event { CONNECTED, TICK_FAILED, FLUSH_FAILED, EVENT_FAILED, BLOCK_FAILED, ROOT_FAILED, BLANK_TAB_FAILED, BROWSER_EXIT_CLICK, BROWSER_EXIT_HOME, STATE_UNREADABLE }
 
     fun info(event: Event) { Log.i("SiteLimiter", event.name) }
 

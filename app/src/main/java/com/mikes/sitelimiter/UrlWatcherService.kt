@@ -81,6 +81,11 @@ class UrlWatcherService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         if (connected === this) connected = null
         handler.removeCallbacks(ticker)
+        try {
+            stopAccruing()
+        } catch (t: Throwable) {
+            PrivacyLog.warning(PrivacyLog.Event.FLUSH_FAILED, t)
+        }
         return super.onUnbind(intent)
     }
 
@@ -106,6 +111,8 @@ class UrlWatcherService : AccessibilityService() {
         sampler.sample(SystemClock.elapsedRealtime(), throttle) { tick() }
     }
 
+    /** Runs on every event, so it must stay cheap: an in-memory read and, almost always, an
+     * identity comparison. The filter is only rewritten when the selection changes. */
     private fun refreshBrowserFilter() {
         browsers = prefs.browsers()
         if (filteredBrowsers == browsers) return
@@ -123,7 +130,11 @@ class UrlWatcherService : AccessibilityService() {
         prefs.accrue(tracker, pkg, observation, SystemClock.elapsedRealtime(), power.isInteractive)
     }
 
-    private fun stopAccruing() = recordHost(null, HostObservation.WindowUnavailable)
+    /** Leaving the browser, screen off or shutdown: bank the time and write batched usage. */
+    private fun stopAccruing() {
+        recordHost(null, HostObservation.WindowUnavailable)
+        prefs.flush()
+    }
 
     /** Refresh the active URL on every accepted sample, even when a host is already known. */
     private fun tick() {
