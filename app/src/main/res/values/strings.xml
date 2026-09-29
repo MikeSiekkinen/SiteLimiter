@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="tab_cleanup_failed">Couldn’t confirm that the blocked tab was closed or cleared. Close it manually in the browser’s tab overview.</string>
     <string name="app_name">Site Limiter</string>
     <string name="service_label">Site Limiter watcher</string>
-    <string name="service_description">Reads the URL bar of the browsers you choose so Site Limiter can count how long you spend on the sites you have put a daily limit on. Nothing leaves the device.</string>
+    <string name="service_description">Reads the URL bar of the browsers you choose to enforce your daily site limits. When you leave a blocked site, it uses browser controls to close the tab or clear its page before returning home. Nothing leaves the device.</string>
 </resources>
