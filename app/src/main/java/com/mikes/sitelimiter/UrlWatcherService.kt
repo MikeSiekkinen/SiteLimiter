@@ -34,7 +34,7 @@ class UrlWatcherService : AccessibilityService() {
     private var filteredBrowsers: Set<String>? = null
 
     private val tracker = HostTracker(MAX_ACCRUAL_MS)
-    private var lastExtractMs = 0L
+    private val sampler = UrlSampler()
     private var lastFallbackScanMs = 0L
     private var lastFallbackScanPkg: String? = null
     private var lastBlockMs = 0L
@@ -46,7 +46,7 @@ class UrlWatcherService : AccessibilityService() {
     private val ticker = object : Runnable {
         override fun run() {
             try {
-                tick(verifyForeground = true)
+                sampleWindow()
             } catch (t: Throwable) {
                 PrivacyLog.warning(PrivacyLog.Event.TICK_FAILED, t)
             }
@@ -88,23 +88,13 @@ class UrlWatcherService : AccessibilityService() {
     private fun handleEvent(event: AccessibilityEvent) {
         refreshBrowserFilter()
         val pkg = event.packageName?.toString() ?: return
-        if (pkg !in browsers || activePackage() != pkg) return
+        if (pkg !in browsers) return
+        sampleWindow(throttle = event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            pkg == tracker.browserPackage)
+    }
 
-        if (pkg != tracker.browserPackage) {
-            // The transition time is unknown; discard the unobserved interval.
-            stopAccruing()
-        }
-
-        // Content-change events fire constantly while a page renders; sample them.
-        val now = SystemClock.elapsedRealtime()
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
-            now - lastExtractMs < EXTRACT_THROTTLE_MS
-        ) return
-        lastExtractMs = now
-
-        recordHost(pkg, extractHost(pkg))
-        // The event already told us the foreground package, so skip the extra window lookup.
-        tick(verifyForeground = false)
+    private fun sampleWindow(throttle: Boolean = false) {
+        sampler.sample(SystemClock.elapsedRealtime(), throttle) { tick() }
     }
 
     private fun refreshBrowserFilter() {
@@ -126,11 +116,8 @@ class UrlWatcherService : AccessibilityService() {
 
     private fun stopAccruing() = recordHost(null, HostObservation.WindowUnavailable)
 
-    /**
-     * @param verifyForeground re-read the active window to confirm what is really in front.
-     * Costs a binder round trip, so only the timer does it; events carry their own package.
-     */
-    private fun tick(verifyForeground: Boolean) {
+    /** Refresh the active URL on every accepted sample, even when a host is already known. */
+    private fun tick() {
         refreshBrowserFilter()
         rollDayIfNeeded()
 
@@ -140,19 +127,23 @@ class UrlWatcherService : AccessibilityService() {
             return
         }
 
-        // The active window is the authoritative answer to "what is in front". Event ordering
-        // alone is not: opening the notification shade makes systemui the foreground package,
-        // and dismissing it does not reliably produce a new state-change event for the browser,
-        // so a static page would stop being counted until something else happened to fire.
-        val pkg = if (verifyForeground) activePackage() else tracker.browserPackage
-        if (pkg == null || pkg !in browsers) {
+        val root = activeRoot()
+        if (root == null) {
             stopAccruing()
             return
         }
-
-        // Poll even after filtering non-browser events: a static page may not emit a new
-        // event after the user switches back from another app or the notification shade.
-        recordHost(pkg, extractHost(pkg))
+        try {
+            // Read the package and URL from the same root. Background events cannot claim
+            // foreground ownership, and non-browser text is never inspected.
+            val pkg = root.packageName?.toString()
+            if (pkg == null || pkg !in browsers) {
+                stopAccruing()
+                return
+            }
+            recordHost(pkg, extractHost(root, pkg))
+        } finally {
+            recycleQuietly(root)
+        }
         val host = tracker.host ?: return
 
         val blocked = prefs.blockingRule(host)
@@ -206,15 +197,6 @@ class UrlWatcherService : AccessibilityService() {
 
     // ---------------- URL extraction ----------------
 
-    private fun activePackage(): String? {
-        val root = activeRoot() ?: return null
-        return try {
-            root.packageName?.toString()
-        } finally {
-            recycleQuietly(root)
-        }
-    }
-
     private fun activeRoot(): AccessibilityNodeInfo? = try {
         rootInActiveWindow
     } catch (t: Throwable) {
@@ -222,35 +204,28 @@ class UrlWatcherService : AccessibilityService() {
         null
     }
 
-    private fun extractHost(pkg: String): HostObservation {
-        val root = activeRoot() ?: return HostObservation.WindowUnavailable
-        try {
-            if (root.packageName?.toString() != pkg) return HostObservation.WindowUnavailable
-
-            for (id in Browsers.urlBarIds(pkg)) {
-                val nodes = root.findAccessibilityNodeInfosByViewId(id) ?: continue
-                try {
-                    for (node in nodes) {
-                        if (!node.isVisibleToUser) continue
-                        return Browsers.observeUrlBar(node.text, node.contentDescription, node.isFocused)
-                    }
-                } finally {
-                    nodes.forEach { recycleQuietly(it) }
+    private fun extractHost(root: AccessibilityNodeInfo, pkg: String): HostObservation {
+        for (id in Browsers.urlBarIds(pkg)) {
+            val nodes = root.findAccessibilityNodeInfosByViewId(id) ?: continue
+            try {
+                for (node in nodes) {
+                    if (!node.isVisibleToUser) continue
+                    return Browsers.observeUrlBar(node.text, node.contentDescription, node.isFocused)
                 }
+            } finally {
+                nodes.forEach { recycleQuietly(it) }
             }
-
-            // Unknown browser, or the toolbar is hidden because the page is scrolled. The scan
-            // is the expensive path, so rate-limit it hard.
-            val now = SystemClock.elapsedRealtime()
-            if (pkg == lastFallbackScanPkg && now - lastFallbackScanMs < FALLBACK_SCAN_INTERVAL_MS) {
-                return HostObservation.ToolbarUnavailable
-            }
-            lastFallbackScanMs = now
-            lastFallbackScanPkg = pkg
-            return scanForUrlBar(root)
-        } finally {
-            recycleQuietly(root)
         }
+
+        // Unknown browser, or the toolbar is hidden because the page is scrolled. The scan
+        // is the expensive path, so rate-limit it hard.
+        val now = SystemClock.elapsedRealtime()
+        if (pkg == lastFallbackScanPkg && now - lastFallbackScanMs < FALLBACK_SCAN_INTERVAL_MS) {
+            return HostObservation.ToolbarUnavailable
+        }
+        lastFallbackScanMs = now
+        lastFallbackScanPkg = pkg
+        return scanForUrlBar(root)
     }
 
     private fun scanForUrlBar(root: AccessibilityNodeInfo): HostObservation {
@@ -304,7 +279,6 @@ class UrlWatcherService : AccessibilityService() {
         /** Largest gap a single flush will bank. Anything more means the device slept. */
         private const val MAX_ACCRUAL_MS = TICK_MS * 3
 
-        private const val EXTRACT_THROTTLE_MS = 700L
         private const val FALLBACK_SCAN_INTERVAL_MS = 3_000L
         private const val BLOCK_DEBOUNCE_MS = 4_000L
         private const val MAX_SCAN_NODES = 400

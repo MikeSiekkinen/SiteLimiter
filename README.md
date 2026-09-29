@@ -77,14 +77,16 @@ Or copy the APK to the phone and tap it.
   ticked, and reads the omnibox node — `<package>:id/url_bar` on every Chromium
   fork (Chrome, Brave, Edge, Vivaldi, Kiwi, Opera), with specific IDs for Firefox,
   Samsung Internet and DuckDuckGo, plus a bounded tree scan as a fallback.
-- A 5-second ticker banks elapsed time against every matching domain and checks
-  their budgets. Screen-off is checked explicitly, because no accessibility events arrive
+- A 5-second ticker refreshes the URL even when a host is already known, banks elapsed
+  time against every matching domain, and checks their budgets. Timer samples bypass
+  event throttling, recovering missed navigation even on a static page.
+  Screen-off is checked explicitly, because no accessibility events arrive
   while the screen is off. A single flush also refuses to bank any gap longer than
   three ticks: `elapsedRealtime()` keeps counting through deep sleep, so without that
   cap, locking the phone on a page and picking it up the next morning would charge
   the whole night to the budget.
 - The active window, not event ordering, is the authoritative answer to "which app is
-  in front" — checked once per timer tick. Event ordering alone loses the browser when
+  in front" — checked on event samples and every timer tick. Event ordering alone loses the browser when
   the notification shade opens and never picks it back up on a static page.
 - Tracking pauses while the URL bar is focused: its text is what you are typing,
   not the page. A visible empty bar or internal page clears the previous host.
@@ -158,6 +160,7 @@ The service subscribes only to selected browser packages. An empty selection doe
 | --- | --- |
 | `UrlWatcherService.kt` | Accessibility service: URL extraction, time accounting, blocking |
 | `HostTracker.kt` | Browser-scoped host state and usage-clock observations |
+| `UrlSampler.kt` | Throttled content events and unconditional timer samples |
 | `Browsers.kt` | Browser packages, per-browser URL-bar IDs, host parsing |
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
