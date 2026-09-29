@@ -72,31 +72,45 @@ class Prefs(ctx: Context) {
 
     companion object {
         private const val KEY_STATE = "state_v2"
+        private const val KEY_UNREADABLE = "state_v2_unreadable"
 
         @Volatile private var shared: StateStore? = null
 
         private fun storeFor(ctx: Context): StateStore = shared ?: synchronized(this) {
             shared ?: run {
                 val sp = ctx.applicationContext.getSharedPreferences("sitelimiter", Context.MODE_PRIVATE)
-                StateStore(load = { now -> load(sp, now) }, save = { save(sp, it) }, zone = { ZoneId.systemDefault() })
+                StateStore(
+                    load = { now -> load(sp, now) },
+                    save = { s, durable -> save(sp, s, durable) },
+                    zone = { ZoneId.systemDefault() },
+                )
             }.also { shared = it }
         }
 
         private fun load(sp: SharedPreferences, now: Long): LimitState {
             val raw = sp.getString(KEY_STATE, null) ?: return migrate(sp, now)
             return StateCodec.decode(raw, Browsers.DEFAULT_PACKAGES) ?: run {
-                // Unreadable state falls back to the legacy keys, which are still present, or defaults.
+                // Keep the damaged text before the rebuilt state overwrites it, then rebuild from
+                // the legacy keys, which every save keeps current, or defaults.
                 PrivacyLog.info(PrivacyLog.Event.STATE_UNREADABLE)
+                sp.edit().putString(KEY_UNREADABLE, raw).commit()
                 migrate(sp, now)
             }
         }
 
         /**
-         * The legacy keys are deliberately left in place, so a downgrade to a build from
-         * before state_v2 still finds its rules. Remove them in a later version.
+         * Also mirrors rules, browsers and reset hour into the legacy keys, so a downgrade to a
+         * build from before state_v2, and the unreadable-state fallback, both find current
+         * settings. Older builds ignore the `hard` field. Usage, snoozes and off-for-today are
+         * not mirrored. Durable writes use commit(); batched usage uses apply().
          */
-        private fun save(sp: SharedPreferences, s: LimitState) {
-            sp.edit().putString(KEY_STATE, StateCodec.encode(s)).apply()
+        private fun save(sp: SharedPreferences, s: LimitState, durable: Boolean) {
+            val edit = sp.edit()
+                .putString(KEY_STATE, StateCodec.encode(s))
+                .putString("rules", StateCodec.encodeRules(s.rules))
+                .putString("browsers", StateCodec.encodeStrings(s.browsers))
+                .putInt("reset_hour", s.resetHour)
+            if (durable) edit.commit() else edit.apply()
         }
 
         /** Builds state from the pre-state_v2 keys: rules, today's usage, snoozes and browsers. */

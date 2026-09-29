@@ -26,6 +26,15 @@ class StateCodecTest {
         assertEquals(s, StateCodec.decode(StateCodec.encode(s), defaults))
     }
 
+    @Test fun `legacy mirror keys round trip and keep the fields older builds read`() {
+        val rules = StateCodec.encodeRules(full.rules)
+        assertEquals(full.rules, StateCodec.rules(org.json.JSONArray(rules)))
+        val first = org.json.JSONArray(rules).getJSONObject(0)
+        assertEquals("example.com", first.getString("domain"))
+        assertEquals(600, first.getInt("limit"))
+        assertEquals(full.browsers, StateCodec.strings(org.json.JSONArray(StateCodec.encodeStrings(full.browsers))))
+    }
+
     @Test fun `text that is not a JSON object is unreadable`() {
         assertNull(StateCodec.decode("", defaults))
         assertNull(StateCodec.decode("{\"rules\":", defaults))

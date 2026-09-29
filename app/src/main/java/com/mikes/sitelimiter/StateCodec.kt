@@ -11,7 +11,7 @@ import org.json.JSONObject
 object StateCodec {
 
     fun encode(s: LimitState): String {
-        val o = JSONObject().put("rules", JSONArray().apply { s.rules.forEach { put(writeRule(it)) } })
+        val o = JSONObject().put("rules", rulesArray(s.rules))
             .put("browsers", JSONArray(s.browsers.sorted())).put("resetHour", s.resetHour)
             .put("day", s.day).put("endsAt", s.endsAt).put("usage", JSONObject(s.usage))
             .put("snoozes", JSONObject(s.snoozes)).put("offToday", JSONArray(s.offToday.sorted()))
@@ -37,7 +37,8 @@ object StateCodec {
             browsers = o.optJSONArray("browsers")?.let { strings(it) } ?: defaultBrowsers,
             resetHour = o.optInt("resetHour", 0).takeIf { it in 0..23 } ?: 0,
             day = o.optString("day", ""),
-            // 0 makes the next read start a fresh budget period instead of trusting a bad value.
+            // 0 makes the next read compute a new day and end time instead of trusting a bad
+            // value. Usage, locks and off-for-today are kept, so a damaged value cannot lift a limit.
             endsAt = o.optLong("endsAt", 0L),
             usage = ints(o.optJSONObject("usage")),
             snoozes = longs(o.optJSONObject("snoozes")),
@@ -51,6 +52,14 @@ object StateCodec {
 
     /** Also used to read the legacy `rules` key during migration. */
     fun rules(a: JSONArray?): List<Rule> = objects(a).mapNotNull { readRule(it) }
+
+    /** The legacy `rules` key. Builds from before hard limits read it and ignore `hard`. */
+    fun encodeRules(rules: List<Rule>): String = rulesArray(rules).toString()
+
+    /** The legacy `browsers` key. */
+    fun encodeStrings(values: Set<String>): String = JSONArray(values.sorted()).toString()
+
+    private fun rulesArray(rules: List<Rule>) = JSONArray().apply { rules.forEach { put(writeRule(it)) } }
 
     private fun pendingRules(a: JSONArray?): Map<String, Rule?> = buildMap {
         for (o in objects(a)) {

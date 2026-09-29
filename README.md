@@ -171,7 +171,7 @@ The service subscribes only to selected browser packages. An empty selection doe
 | `BudgetLogic.kt` | Budget day boundaries and the usage clock |
 | `PrivacyLog.kt` | Logging that emits only fixed event names and code locations |
 | `Browsers.kt` | Browser packages, per-browser URL-bar IDs, host parsing |
-| `Prefs.kt` | Facade over the shared state store; legacy-key migration |
+| `Prefs.kt` | Facade over the shared state store; migration from, and mirroring to, the legacy keys |
 | `StateStore.kt` | The one in-memory copy of limit state; batches usage writes (at most 30 s of counted time can be lost if the process is killed) |
 | `StateCodec.kt` | Lenient JSON encoding of the state, so one bad value cannot lose every rule |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
