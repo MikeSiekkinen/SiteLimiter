@@ -26,9 +26,10 @@ class Prefs(ctx: Context) {
     }
 
     fun rules(): List<Rule> = snapshot().rules
-    fun matchingRules(host: String): List<Rule> = rules().filter { it.matches(host) }
-    fun matchRule(host: String): Rule? = matchingRules(host).firstOrNull()
+    fun matchingRules(host: String): List<Rule> = LimitPolicy.matchingRules(snapshot(), host)
     fun blockingRule(host: String): Rule? = LimitPolicy.blockingRule(snapshot(), host, System.currentTimeMillis())
+    fun warningRule(host: String, warned: Set<String>): Rule? =
+        LimitPolicy.warningRule(snapshot(), host, System.currentTimeMillis(), warned)
 
     fun upsertRule(domain: String, limitSeconds: Int, mode: RuleMode = RuleMode.NUDGE): ChangeResult {
         val normalized = normalizeDomain(domain) ?: return ChangeResult.REJECTED

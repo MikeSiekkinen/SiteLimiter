@@ -48,7 +48,11 @@ Or copy the APK to the phone and tap it.
 
 1. **Open Site Limiter** and add a limit, e.g. `reddit.com` / `30`.
    Subdomains count toward the parent, so `old.reddit.com` and `www.reddit.com`
-   both spend the `reddit.com` budget.
+   both spend the `reddit.com` budget. If you also add an `old.reddit.com` limit,
+   browsing it spends both budgets and either can block the site. Hard limits
+   take priority; otherwise, the most specific exhausted domain appears first.
+   Snooze and "off for today" affect only the displayed nudge limit, so another
+   exhausted limit may appear next.
    Limits accept whole minutes from 0 through 35,791,394; zero blocks the site entirely.
 
 2. **Tick the browsers to watch.** The list is every app on the device that can
@@ -73,8 +77,8 @@ Or copy the APK to the phone and tap it.
   ticked, and reads the omnibox node — `<package>:id/url_bar` on every Chromium
   fork (Chrome, Brave, Edge, Vivaldi, Kiwi, Opera), with specific IDs for Firefox,
   Samsung Internet and DuckDuckGo, plus a bounded tree scan as a fallback.
-- A 5-second ticker banks elapsed time against the matching domain and checks the
-  budget. Screen-off is checked explicitly, because no accessibility events arrive
+- A 5-second ticker banks elapsed time against every matching domain and checks
+  their budgets. Screen-off is checked explicitly, because no accessibility events arrive
   while the screen is off. A single flush also refuses to bank any gap longer than
   three ticks: `elapsedRealtime()` keeps counting through deep sleep, so without that
   cap, locking the phone on a page and picking it up the next morning would charge
@@ -83,7 +87,8 @@ Or copy the APK to the phone and tap it.
   in front" — checked once per timer tick. Event ordering alone loses the browser when
   the notification shade opens and never picks it back up on a static page.
 - A focused URL bar is ignored: its text is what you are typing, not the page.
-- You get a "5 min left" toast once per day per domain before the wall.
+- You get a "5 min left" toast once per day per domain before the wall. At most one
+  warning appears per check, most specific first; exhausted budgets take priority.
 - Budgets roll over at the hour you configure. Set it to 4 if your day genuinely
   ends at 2am.
 

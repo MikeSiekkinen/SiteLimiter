@@ -58,6 +58,13 @@
             android:orientation="vertical"
             android:visibility="gone">
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="These options affect this limit only. Another exhausted limit may still block this site."
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSnooze5"
                 style="@style/Widget.Material3.Button.OutlinedButton"

@@ -185,9 +185,7 @@ class UrlWatcherService : AccessibilityService() {
         if (blocked != null) {
             block(blocked, prefs.usedSeconds(blocked.domain), host)
         } else {
-            prefs.matchingRules(host).filterNot { prefs.blockingSuppressed(it.domain) }.forEach { rule ->
-                if (rule.limitSeconds - prefs.usedSeconds(rule.domain) <= WARN_SECONDS) warnOnce(rule)
-            }
+            prefs.warningRule(host, warned)?.let { warnOnce(it) }
         }
     }
 
@@ -335,7 +333,6 @@ class UrlWatcherService : AccessibilityService() {
         private const val FALLBACK_SCAN_INTERVAL_MS = 3_000L
         private const val BLOCK_DEBOUNCE_MS = 4_000L
         private const val MAX_SCAN_NODES = 400
-        private const val WARN_SECONDS = 5 * 60
 
         /** Whether the user has switched this service on in system settings. */
         fun isEnabled(ctx: Context): Boolean {

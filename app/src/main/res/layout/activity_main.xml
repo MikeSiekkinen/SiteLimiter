@@ -138,7 +138,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Saving a domain that already has a limit updates it. Subdomains count toward the parent (old.reddit.com counts as reddit.com)."
+            android:text="Saving an existing domain updates its limit. Subdomains count toward every matching parent budget. If old.reddit.com and reddit.com both have limits, both apply. Snooze affects one nudge limit at a time."
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
         <com.google.android.material.switchmaterial.SwitchMaterial

@@ -34,6 +34,13 @@ data class LimitChange(val state: LimitState, val result: ChangeResult)
 
 /** All enforcement decisions live here, independently of Android, storage and UI callbacks. */
 object LimitPolicy {
+    private const val WARN_SECONDS = 5 * 60
+
+    /** Every ancestor budget applies; the most specific match is presented first. */
+    fun matchingRules(state: LimitState, host: String): List<Rule> = state.rules
+        .filter { it.matches(host) }
+        .sortedWith(compareByDescending<Rule> { it.domain.length }.thenBy { it.domain })
+
     fun day(now: Long, hour: Int, zone: ZoneId): String = BudgetLogic.day(now, hour, zone)
 
     fun nextReset(now: Long, hour: Int, zone: ZoneId): Long {
@@ -118,7 +125,7 @@ object LimitPolicy {
 
     fun addHostUsage(state: LimitState, host: String, seconds: Int, now: Long, zone: ZoneId): LimitState {
         val s = refresh(state, now, zone)
-        return s.rules.filter { it.matches(host) }.fold(s) { result, rule ->
+        return matchingRules(s, host).fold(s) { result, rule ->
             addUsage(result, rule.domain, seconds, now, zone)
         }
     }
@@ -138,8 +145,17 @@ object LimitPolicy {
     fun suppressed(state: LimitState, rule: Rule, now: Long): Boolean = rule.mode == RuleMode.NUDGE &&
         BudgetLogic.suppressed(state.day, if (rule.domain in state.offToday) state.day else null, state.snoozes[rule.domain] ?: 0, now)
 
-    fun blockingRule(state: LimitState, host: String, now: Long): Rule? = state.rules
-        .filter { it.matches(host) && ((state.usage[it.domain] ?: 0) >= it.limitSeconds || it.domain in state.locked) && !suppressed(state, it, now) }
+    fun blockingRule(state: LimitState, host: String, now: Long): Rule? = matchingRules(state, host)
+        .filter { ((state.usage[it.domain] ?: 0) >= it.limitSeconds || it.domain in state.locked) && !suppressed(state, it, now) }
         .sortedWith(compareByDescending<Rule> { it.mode == RuleMode.HARD }.thenByDescending { it.domain.length }.thenBy { it.domain })
         .firstOrNull()
+
+    /** Show one warning at a time, without marking warnings that the user never saw. */
+    fun warningRule(state: LimitState, host: String, now: Long, warned: Set<String>): Rule? {
+        if (blockingRule(state, host, now) != null) return null
+        return matchingRules(state, host).firstOrNull {
+            it.domain !in warned && !suppressed(state, it, now) &&
+                it.limitSeconds - (state.usage[it.domain] ?: 0) in 1..WARN_SECONDS
+        }
+    }
 }
