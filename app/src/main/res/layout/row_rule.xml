@@ -4,14 +4,13 @@
     android:layout_height="wrap_content"
     android:baselineAligned="false"
     android:gravity="center_vertical"
-    android:orientation="horizontal"
+    android:orientation="vertical"
     android:paddingTop="10dp"
     android:paddingBottom="10dp">
 
     <LinearLayout
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_weight="1"
         android:orientation="vertical">
 
         <TextView
@@ -35,6 +34,19 @@
             android:max="100" />
     </LinearLayout>
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnEditRule"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:minWidth="0dp"
+        android:text="Edit" />
+
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnResetUsage"
         style="@style/Widget.Material3.Button.TextButton"
@@ -50,4 +62,5 @@
         android:layout_height="wrap_content"
         android:minWidth="0dp"
         android:text="Delete" />
+    </LinearLayout>
 </LinearLayout>

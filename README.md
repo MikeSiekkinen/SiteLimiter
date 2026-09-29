@@ -4,9 +4,10 @@ Daily time budgets for websites, on Android, across whatever browsers you use.
 No network code, no analytics, no accounts. All state is one `SharedPreferences`
 file in the app's private storage.
 
-It is a nudge, not a lock: the block screen offers a 5- or 15-minute snooze and an
-"off for the rest of today". Those escape hatches sit one tap behind a
-"…or keep going" disclosure, so closing the tab stays the easy path.
+Each rule can be a nudge or a hard limit. Nudges offer a 5- or 15-minute snooze
+and an "off for the rest of today" behind "…or keep going". Hard limits have no
+extensions; after the budget is exhausted, changes that loosen the restriction
+wait until the existing next reset. See [Hard limits](#hard-limits).
 
 ## Why an app and not a browser extension
 
@@ -85,9 +86,11 @@ Or copy the APK to the phone and tap it.
 - Budgets roll over at the hour you configure. Set it to 4 if your day genuinely
   ends at 2am.
 
-## What was verified on device
+## Historical upstream device checks
 
-Galaxy S24+, Android 16, against Brave and Chrome:
+The original upstream version was checked on a Galaxy S24+, Android 16, against
+Brave and Chrome. These observations do not constitute device validation of this
+fork’s hard limits or other changes:
 
 | Behaviour | Result |
 | --- | --- |
@@ -110,14 +113,13 @@ userinfo-parsing bug now covered by `HostParsingTest`.
 
 ## Known limits, honestly
 
-- **Verified end to end** on a Galaxy S24+ (SM-S926U1, Android 16 / SDK 36) against
-  Brave and Chrome. Time accrued at exactly 1s per second with no drift, the block
-  screen fired on the tick after the budget was spent, and snooze / off-for-today
-  both suppressed it correctly. See "What was verified" below.
+- **Device coverage.** Historical upstream checks used a Galaxy S24+ with Brave
+  and Chrome. This fork still needs device checks for service lifecycle, screen
+  locking, overlapping hard limits and settings changes at the reset boundary.
 - **Scrolled-away toolbar.** When Chromium hides the toolbar on scroll, the URL bar
   leaves the accessibility tree and the app keeps counting the last known host. If
   you navigate elsewhere while scrolled down, time is misattributed until the
-  toolbar reappears. Fine for a productivity nudge; would matter for a lock.
+  toolbar reappears. This limitation also applies to hard limits.
 - **Detection latency** is up to ~5 seconds, so you can overshoot a budget slightly.
 - **Trivially bypassed** — incognito is still tracked, but turning the accessibility
   service off takes four taps. That is the intended design.
@@ -163,3 +165,13 @@ to verify, so the safe side was chosen.
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
 | `MainActivity.kt` | Setup, limits, browser selection |
+
+## Hard limits
+
+Each rule can be a **Nudge** (the existing default) or a **Hard limit**. Existing installations retain their rules and today's usage; old rules remain nudges. Hard limits offer no snooze or off-for-today action, including when a nudge was previously snoozed.
+
+Before a hard budget is exhausted, its settings can be changed immediately. Once exhausted, raising its budget, deleting it or changing it back to a nudge is scheduled for the **existing next reset**, and its usage cannot be reset manually. Removing watched browsers or changing the reset hour is also deferred while any hard rule is locked. Tightening a rule or adding watched browsers remains immediate. Scheduled changes are shown in settings and can be cancelled. Locks and scheduled changes survive process death and device restarts.
+
+Every matching domain/subdomain rule accrues usage independently. Any exhausted hard rule takes priority; a more specific nudge cannot bypass a hard parent rule. The block screen reloads current rules when reused and at the daily reset.
+
+These are in-app commitment controls. Android still lets the device owner disable the accessibility service, clear the app's data or uninstall the app. Changing system time, using an unwatched browser and hidden browser toolbars remain limitations of this accessibility-based approach.

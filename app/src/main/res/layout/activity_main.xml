@@ -141,6 +141,12 @@
             android:text="Saving a domain that already has a limit updates it. Subdomains count toward the parent (old.reddit.com counts as reddit.com)."
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/inputHardLimit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Hard limit — no extensions" />
+
         <!-- ============ Browsers ============ -->
         <TextView
             android:layout_width="wrap_content"
@@ -208,5 +214,21 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="32dp" />
+        <TextView
+            android:id="@+id/pendingChangesText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCancelPendingChanges"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Cancel scheduled changes"
+            android:visibility="gone" />
+
     </LinearLayout>
 </ScrollView>

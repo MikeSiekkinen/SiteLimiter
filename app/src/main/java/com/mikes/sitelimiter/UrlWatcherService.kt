@@ -157,7 +157,7 @@ class UrlWatcherService : AccessibilityService() {
         val seconds = (elapsed / 1000L).toInt()
         if (seconds <= 0) return // sub-second, let it accumulate into the next flush
 
-        prefs.matchRule(host)?.let { prefs.addUsage(it.domain, seconds) }
+        prefs.addHostUsage(host, seconds)
         // Carry the sub-second remainder so repeated flushes do not shave time off.
         lastAccrualMs = now - (elapsed % 1000L)
     }
@@ -200,20 +200,19 @@ class UrlWatcherService : AccessibilityService() {
 
         flush()
 
-        val rule = prefs.matchRule(host) ?: return
-        if (prefs.blockingSuppressed(rule.domain)) return
-
-        val used = prefs.usedSeconds(rule.domain)
-        if (used >= rule.limitSeconds) {
-            block(rule, used)
-        } else if (rule.limitSeconds - used <= WARN_SECONDS) {
-            warnOnce(rule)
+        val blocked = prefs.blockingRule(host)
+        if (blocked != null) {
+            block(blocked, prefs.usedSeconds(blocked.domain), host)
+        } else {
+            prefs.matchingRules(host).filterNot { prefs.blockingSuppressed(it.domain) }.forEach { rule ->
+                if (rule.limitSeconds - prefs.usedSeconds(rule.domain) <= WARN_SECONDS) warnOnce(rule)
+            }
         }
     }
 
     /** Clears per-day state and prunes stale counters when the budget day rolls over. */
     private fun rollDayIfNeeded() {
-        val day = prefs.today()
+        val day = prefs.snapshot().endsAt.toString()
         if (day == currentDay) return
         currentDay = day
         warned.clear()
@@ -226,7 +225,7 @@ class UrlWatcherService : AccessibilityService() {
         Toast.makeText(this, "$left min left on ${rule.domain}", Toast.LENGTH_LONG).show()
     }
 
-    private fun block(rule: Rule, usedSeconds: Int) {
+    private fun block(rule: Rule, usedSeconds: Int, host: String) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) return
         lastBlockMs = now
@@ -235,6 +234,7 @@ class UrlWatcherService : AccessibilityService() {
             val intent = Intent(this, BlockActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 .putExtra(BlockActivity.EXTRA_DOMAIN, rule.domain)
+                .putExtra(BlockActivity.EXTRA_HOST, host)
                 .putExtra(BlockActivity.EXTRA_USED, usedSeconds)
                 .putExtra(BlockActivity.EXTRA_LIMIT, rule.limitSeconds)
             try {
