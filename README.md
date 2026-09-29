@@ -21,11 +21,11 @@ permission. Here the permission is granted to code you built and can read.
 
 ## Build
 
-Toolchain, all already installed:
+Toolchain (install JDK 21 and the Android SDK; set `JAVA_HOME` and `ANDROID_HOME` locally):
 
-- Gradle wrapper 9.1.0, AGP 8.13.2, Kotlin 2.2.20
-- JDK 21 (pinned in `gradle.properties` via `org.gradle.java.home`)
-- compileSdk 36, minSdk 26, targetSdk 34
+- Gradle wrapper 9.8.0, AGP 9.4.1 with built-in Kotlin, Kotlin 2.4.20
+- JDK 21; Java/Kotlin bytecode targets Java 17
+- compileSdk 37, minSdk 26, targetSdk 34
 
 ```sh
 ./gradlew :app:assembleDebug
@@ -163,3 +163,7 @@ to verify, so the safe side was chosen.
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
 | `MainActivity.kt` | Setup, limits, browser selection |
+
+## Dependency versions
+
+Stable versions verified against Google Maven and Maven Central on 2026-09-29: AndroidX Core 1.19.1 (includes the former core-ktx extensions), AppCompat 1.8.0, Material 1.14.0, and JUnit 4.13.2, the latest release of the existing `junit:junit` artifact. No preview versions or dynamic version selectors are used. The Gradle distribution is verified with its official SHA-256 checksum.
