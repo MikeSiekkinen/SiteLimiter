@@ -4,9 +4,10 @@ Daily time budgets for websites, on Android, across whatever browsers you use.
 No network code, no analytics, no accounts. All state is one `SharedPreferences`
 file in the app's private storage.
 
-It is a nudge, not a lock: the block screen offers a 5- or 15-minute snooze and an
-"off for the rest of today". Those escape hatches sit one tap behind a
-"…or keep going" disclosure, so closing the tab stays the easy path.
+Each rule can be a nudge or a hard limit. Nudges offer a 5- or 15-minute snooze
+and an "off for the rest of today" behind "…or keep going". Hard limits have no
+extensions; after the budget is exhausted, changes that loosen the restriction
+wait until the existing next reset. See [Hard limits](#hard-limits).
 
 ## Why an app and not a browser extension
 
@@ -47,7 +48,12 @@ Or copy the APK to the phone and tap it.
 
 1. **Open Site Limiter** and add a limit, e.g. `reddit.com` / `30`.
    Subdomains count toward the parent, so `old.reddit.com` and `www.reddit.com`
-   both spend the `reddit.com` budget.
+   both spend the `reddit.com` budget. If you also add an `old.reddit.com` limit,
+   browsing it spends both budgets and either can block the site. Hard limits
+   take priority; otherwise, the most specific exhausted domain appears first.
+   Snooze and "off for today" affect only the displayed nudge limit, so another
+   exhausted limit may appear next.
+   Limits accept whole minutes from 0 through 35,791,394; zero blocks the site entirely.
 
 2. **Tick the browsers to watch.** The list is every app on the device that can
    open an `https://` link. Brave and Chrome should both be there.
@@ -71,17 +77,23 @@ Or copy the APK to the phone and tap it.
   ticked, and reads the omnibox node — `<package>:id/url_bar` on every Chromium
   fork (Chrome, Brave, Edge, Vivaldi, Kiwi, Opera), with specific IDs for Firefox,
   Samsung Internet and DuckDuckGo, plus a bounded tree scan as a fallback.
-- A 5-second ticker banks elapsed time against the matching domain and checks the
-  budget. Screen-off is checked explicitly, because no accessibility events arrive
+- A 5-second ticker refreshes the URL even when a host is already known, banks elapsed
+  time against every matching domain, and checks their budgets. Timer samples bypass
+  event throttling, recovering missed navigation even on a static page.
+  Screen-off is checked explicitly, because no accessibility events arrive
   while the screen is off. A single flush also refuses to bank any gap longer than
   three ticks: `elapsedRealtime()` keeps counting through deep sleep, so without that
   cap, locking the phone on a page and picking it up the next morning would charge
   the whole night to the budget.
 - The active window, not event ordering, is the authoritative answer to "which app is
-  in front" — checked once per timer tick. Event ordering alone loses the browser when
+  in front" — checked on event samples and every timer tick. Event ordering alone loses the browser when
   the notification shade opens and never picks it back up on a static page.
-- A focused URL bar is ignored: its text is what you are typing, not the page.
-- You get a "5 min left" toast once per day per domain before the wall.
+- Tracking pauses while the URL bar is focused: its text is what you are typing,
+  not the page. A visible empty bar or internal page clears the previous host.
+  Switching browsers also clears it; a missing toolbar only preserves the host
+  within the same browser.
+- You get a "5 min left" toast once per day per domain before the wall. At most one
+  warning appears per check, most specific first; exhausted budgets take priority.
 - Budgets roll over at the hour you configure. Set it to 4 if your day genuinely
   ends at 2am.
 
@@ -104,20 +116,27 @@ Galaxy S24+, Android 16, against Brave and Chrome:
 | Deleting a rule clears its usage/snooze/off | yes |
 | Browser enumeration | exactly 4 real browsers, no junk link handlers |
 | Coexists with another accessibility service | yes, ran alongside a password manager |
+| Upgrade migrates old storage to `state_v2` | rules and today's usage kept; expired snooze and stale off-day dropped |
+| Service survives the upgrade | stays enabled and bound, no crash |
+| "Fine, close it" | goes Home; reopening the browser shows `about:blank`, not the blocked page |
+| Hard limit at its budget | locks at once; delete becomes "Schedule delete" |
+| Loosening a locked hard limit | queued as a scheduled change; the rule stays hard |
+| Hard-limit block screen | no "…or keep going"; Back goes Home |
 
 Chrome showing the full URL rather than an elided domain is what exposed the
 userinfo-parsing bug now covered by `HostParsingTest`.
 
 ## Known limits, honestly
 
-- **Verified end to end** on a Galaxy S24+ (SM-S926U1, Android 16 / SDK 36) against
-  Brave and Chrome. Time accrued at exactly 1s per second with no drift, the block
-  screen fired on the tick after the budget was spent, and snooze / off-for-today
-  both suppressed it correctly. See "What was verified" below.
+- **Device coverage.** Verified on a Galaxy S24+ with Brave and Chrome (see above).
+  Not yet checked on device: screen locking with hard limits, overlapping hard
+  limits, and scheduled changes applying at the reset boundary.
+- **Each block leaves a blank tab.** "Fine, close it" opens a new `about:blank` tab
+  and the blocked tab stays open behind it, so tabs accumulate.
 - **Scrolled-away toolbar.** When Chromium hides the toolbar on scroll, the URL bar
   leaves the accessibility tree and the app keeps counting the last known host. If
   you navigate elsewhere while scrolled down, time is misattributed until the
-  toolbar reappears. Fine for a productivity nudge; would matter for a lock.
+  toolbar reappears. This limitation also applies to hard limits.
 - **Detection latency** is up to ~5 seconds, so you can overshoot a budget slightly.
 - **Trivially bypassed** — incognito is still tracked, but turning the accessibility
   service off takes four taps. That is the intended design.
@@ -135,31 +154,33 @@ grep -o 'resource-id="[^"]*url[^"]*"' w.xml
 
 Then add whatever it prints to `urlBarIds()` in `app/src/main/java/com/mikes/sitelimiter/Browsers.kt`.
 
-Live logs. Host changes and discarded sleep gaps are logged at debug level, and are
-compiled out of release builds so your browsing never lands in logcat on a build you
-use day to day:
+Technical diagnostics use fixed event identifiers and stack-frame code locations. Domains, URLs, browser selection, usage and exception messages are never logged, including in debug builds. There is no remote logging. See [Privacy over all](docs/PRIVACY.md).
 
-```sh
-adb logcat -s SiteLimiter
-```
+## Accessibility boundaries
 
-## A deliberate non-hardening
-
-The accessibility service does not restrict `packageNames` to the browsers you tick, so
-it receives window events from every app. It never *reads content* from anything but a
-watched browser, and nothing leaves the device — but the events do arrive.
-
-Restricting it would be real hardening. It is left off because knowing you have *left*
-the browser depends on seeing events from non-browsers; narrowing the filter risks the
-app happily counting Reddit time while you are in another app. That trade needs a device
-to verify, so the safe side was chosen.
+The service subscribes only to selected browser packages. An empty selection does not subscribe to all apps. A five-second foreground check observes the active package name so leaving a browser still stops accrual; it does not inspect other apps' text. Browser polling recovers static pages after switching back. Android still grants the service a broad capability to retrieve window content; the package filter reduces delivered events and the code restricts how that capability is used.
 
 ## Source map
 
 | File | Role |
 | --- | --- |
 | `UrlWatcherService.kt` | Accessibility service: URL extraction, time accounting, blocking |
+| `HostTracker.kt` | Browser-scoped host state and usage-clock observations |
+| `UrlSampler.kt` | Throttled content events and unconditional timer samples |
+| `LimitPolicy.kt` | All enforcement decisions: matching, blocking, hard-limit locks, scheduled changes |
+| `BudgetLogic.kt` | Budget day boundaries and the usage clock |
+| `PrivacyLog.kt` | Logging that emits only fixed event names and code locations |
 | `Browsers.kt` | Browser packages, per-browser URL-bar IDs, host parsing |
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
 | `MainActivity.kt` | Setup, limits, browser selection |
+
+## Hard limits
+
+Each rule can be a **Nudge** (the existing default) or a **Hard limit**. Existing installations retain their rules and today's usage; old rules remain nudges. Hard limits offer no snooze or off-for-today action, including when a nudge was previously snoozed.
+
+Before a hard budget is exhausted, its settings can be changed immediately. Once exhausted, raising its budget, deleting it or changing it back to a nudge is scheduled for the **existing next reset**, and its usage cannot be reset manually. Removing watched browsers or changing the reset hour is also deferred while any hard rule is locked. Tightening a rule or adding watched browsers remains immediate. Scheduled changes are shown in settings and can be cancelled. Locks and scheduled changes survive process death and device restarts.
+
+Every matching domain/subdomain rule accrues usage independently. Any exhausted hard rule takes priority; a more specific nudge cannot bypass a hard parent rule. The block screen reloads current rules when reused and at the daily reset.
+
+These are in-app commitment controls. Android still lets the device owner disable the accessibility service, clear the app's data or uninstall the app. Changing system time, using an unwatched browser and hidden browser toolbars remain limitations of this accessibility-based approach.

@@ -19,8 +19,8 @@ class HostParsingTest {
 
     @Test
     fun `chrome shows a full url with a query string`() {
-        // Verbatim from com.android.chrome:id/url_bar during a Reddit JS challenge redirect.
-        val actual = "reddit.com/?solution=d5020b960398dee3&js_challenge=1&jsc_token=7afd7253"
+        // Synthetic example of a Chrome URL containing a JS challenge query.
+        val actual = "reddit.com/?solution=synthetic-solution&js_challenge=1&jsc_token=synthetic-token"
         assertEquals("reddit.com", Browsers.hostFromBarText(actual))
     }
 
@@ -95,5 +95,27 @@ class HostParsingTest {
         val rule = Prefs.normalizeDomain("https://www.reddit.com/r/all?x=1")
         val seen = Browsers.hostFromBarText("www.reddit.com")
         assertEquals(rule, seen)
+    }
+
+    @Test
+    fun `schemes inside a query do not replace the actual host`() {
+        assertEquals("reddit.com", Browsers.hostFromBarText("reddit.com/?next=https://other.com"))
+    }
+
+    @Test
+    fun `internal and local URLs are not web pages`() {
+        for (url in listOf("chrome://example.com", "file://example.com/path", "about:blank", "chrome://newtab")) {
+            assertNull(url, Browsers.hostFromBarText(url))
+        }
+    }
+
+    @Test
+    fun `URL observations distinguish page text editing and empty bars`() {
+        assertEquals(HostObservation.Editing, Browsers.observeUrlBar("reddit.com", null, true))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar("", "Search or type URL", false))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar(null, null, false))
+        assertEquals(HostObservation.WebPage("reddit.com"), Browsers.observeUrlBar(null, "reddit.com", false))
+        assertEquals(HostObservation.WebPage("reddit.com"), Browsers.observeUrlBar("reddit.com", "Address", false))
+        assertEquals(HostObservation.NoWebPage, Browsers.observeUrlBar("about:blank", "reddit.com", false))
     }
 }
