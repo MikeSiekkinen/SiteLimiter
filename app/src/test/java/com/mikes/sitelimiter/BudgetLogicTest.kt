@@ -8,6 +8,18 @@ import java.time.ZoneId
 class BudgetLogicTest {
     private fun ms(iso: String) = Instant.parse(iso).toEpochMilli()
 
+    @Test fun `minute input accepts zero and the largest safely representable budget`() {
+        assertEquals(0, BudgetLogic.parseLimitSeconds("0"))
+        assertEquals(1800, BudgetLogic.parseLimitSeconds(" 30 "))
+        assertEquals(2147483640, BudgetLogic.parseLimitSeconds("35791394"))
+    }
+
+    @Test fun `invalid minute input cannot create an overflowed budget`() {
+        for (input in listOf("35791395", "2147483647", "999999999999999999999", "-1", "", " ", "1.5", "abc")) {
+            assertNull(input, BudgetLogic.parseLimitSeconds(input))
+        }
+    }
+
     @Test fun `only real subdomains share a parent budget`() {
         assertTrue(BudgetLogic.matches("example.com", "example.com"))
         assertTrue(BudgetLogic.matches("news.example.com", "example.com"))

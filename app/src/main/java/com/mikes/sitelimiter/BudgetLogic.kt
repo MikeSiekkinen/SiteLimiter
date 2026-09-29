@@ -5,6 +5,14 @@ import java.time.ZoneId
 
 /** Calendar days, not fixed 24-hour durations: a budget reset survives DST changes. */
 object BudgetLogic {
+    const val MAX_MINUTES = Int.MAX_VALUE / 60
+
+    /** Validate before converting so user input cannot overflow the stored seconds. */
+    fun parseLimitSeconds(input: String): Int? {
+        val minutes = input.trim().toIntOrNull() ?: return null
+        return if (minutes in 0..MAX_MINUTES) minutes * 60 else null
+    }
+
     fun day(nowMs: Long, resetHour: Int, zone: ZoneId): String {
         val local = Instant.ofEpochMilli(nowMs).atZone(zone)
         val reset = local.toLocalDate().atTime(resetHour, 0).atZone(zone).toInstant()

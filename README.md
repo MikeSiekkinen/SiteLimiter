@@ -49,6 +49,7 @@ Or copy the APK to the phone and tap it.
 1. **Open Site Limiter** and add a limit, e.g. `reddit.com` / `30`.
    Subdomains count toward the parent, so `old.reddit.com` and `www.reddit.com`
    both spend the `reddit.com` budget.
+   Limits accept whole minutes from 0 through 35,791,394; zero blocks the site entirely.
 
 2. **Tick the browsers to watch.** The list is every app on the device that can
    open an `https://` link. Brave and Chrome should both be there.

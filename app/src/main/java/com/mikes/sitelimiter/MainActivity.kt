@@ -156,13 +156,13 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "That does not look like a domain", Toast.LENGTH_SHORT).show()
             return
         }
-        val minutes = binding.inputMinutes.text?.toString()?.trim()?.toIntOrNull()
-        if (minutes == null || minutes !in 0..Int.MAX_VALUE / 60) {
-            Toast.makeText(this, "Enter minutes from 0 to ${Int.MAX_VALUE / 60}", Toast.LENGTH_SHORT).show()
+        val limitSeconds = BudgetLogic.parseLimitSeconds(binding.inputMinutes.text?.toString().orEmpty())
+        if (limitSeconds == null) {
+            Toast.makeText(this, "Enter whole minutes from 0 to ${BudgetLogic.MAX_MINUTES}", Toast.LENGTH_SHORT).show()
             return
         }
         val mode = if (binding.inputHardLimit.isChecked) RuleMode.HARD else RuleMode.NUDGE
-        val result = prefs.upsertRule(domain, minutes * 60, mode)
+        val result = prefs.upsertRule(domain, limitSeconds, mode)
         binding.inputDomain.setText("")
         binding.inputMinutes.setText("")
         binding.inputHardLimit.isChecked = false
@@ -256,11 +256,11 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null).setPositiveButton("Save", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val value = minutes.text.toString().trim().toIntOrNull()
-                if (value == null || value !in 0..Int.MAX_VALUE / 60) {
-                    minutes.error = "Enter minutes from 0 to ${Int.MAX_VALUE / 60}"
+                val limitSeconds = BudgetLogic.parseLimitSeconds(minutes.text.toString())
+                if (limitSeconds == null) {
+                    minutes.error = "Enter whole minutes from 0 to ${BudgetLogic.MAX_MINUTES}"
                 } else {
-                    showChange(prefs.upsertRule(rule.domain, value * 60, if (hard.isChecked) RuleMode.HARD else RuleMode.NUDGE))
+                    showChange(prefs.upsertRule(rule.domain, limitSeconds, if (hard.isChecked) RuleMode.HARD else RuleMode.NUDGE))
                     dialog.dismiss()
                 }
             }
