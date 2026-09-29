@@ -13,8 +13,19 @@ android {
         applicationId = "com.mikes.sitelimiter"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        val releaseVersion = providers.gradleProperty("releaseVersion").orNull
+        if (releaseVersion == null) {
+            versionCode = 1
+            versionName = "1.0"
+        } else {
+            val match = Regex("v(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})").matchEntire(releaseVersion)
+                ?: error("releaseVersion must be a vMAJOR.MINOR.PATCH tag")
+            val (major, minor, patch) = match.destructured
+            val code = major.toLong() * 1_000_000 + minor.toLong() * 1_000 + patch.toLong()
+            require(code in 2..2_100_000_000L) { "Release versionCode must be between 2 and 2100000000" }
+            versionCode = code.toInt()
+            versionName = releaseVersion.removePrefix("v")
+        }
     }
 
     buildFeatures {
@@ -25,8 +36,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Sideload-only: sign release with the debug key so `assembleRelease` installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            // Sign the unsigned release APK separately; private keys never enter Gradle.
         }
     }
 
@@ -35,9 +46,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
 }
 
 kotlin {

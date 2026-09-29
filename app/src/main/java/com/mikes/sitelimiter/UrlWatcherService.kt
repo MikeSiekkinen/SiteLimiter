@@ -39,8 +39,7 @@ class UrlWatcherService : AccessibilityService() {
     /** Host the front browser is showing, or null when we are not in a browser. */
     private var currentHost: String? = null
 
-    /** elapsedRealtime of the last accrual; 0 means "the clock is not running". */
-    private var lastAccrualMs = 0L
+    private val usageClock = UsageClock(MAX_ACCRUAL_MS)
     private var lastExtractMs = 0L
     private var lastFallbackScanMs = 0L
     private var lastBlockMs = 0L
@@ -98,12 +97,8 @@ class UrlWatcherService : AccessibilityService() {
 
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != foregroundPkg) {
             // Left whatever we were on. Bank the time before switching context.
-            flush()
+            stopAccruing()
             foregroundPkg = pkg
-            if (pkg !in browsers) {
-                currentHost = null
-                lastAccrualMs = 0L
-            }
         }
 
         if (pkg !in browsers) return
@@ -118,8 +113,7 @@ class UrlWatcherService : AccessibilityService() {
 
         val host = extractHost(pkg)
         if (host != null && host != currentHost) {
-            flush()
-            currentHost = host
+            recordHost(host)
             if (BuildConfig.DEBUG) Log.d(TAG, "host -> $host")
         }
         // The event already told us the foreground package, so skip the extra window lookup.
@@ -128,45 +122,16 @@ class UrlWatcherService : AccessibilityService() {
 
     // ---------------- time accounting ----------------
 
-    /** Banks the time since the last accrual against whichever domain owns [currentHost]. */
-    private fun flush() {
-        val now = SystemClock.elapsedRealtime()
-        val host = currentHost
-
-        if (host == null || lastAccrualMs <= 0L) {
-            lastAccrualMs = now
-            return
-        }
-
-        val elapsed = now - lastAccrualMs
-        if (elapsed <= 0L) {
-            lastAccrualMs = now
-            return
-        }
-
-        // elapsedRealtime keeps counting through deep sleep, and no tick runs while the CPU is
-        // suspended. Without this cap, locking the phone on a page and picking it up the next
-        // morning would bank the entire night against the budget. There is no way to know how
-        // much of a gap this large was real reading, so bank none of it.
-        if (elapsed > MAX_ACCRUAL_MS) {
-            if (BuildConfig.DEBUG) Log.d(TAG, "discarding ${elapsed}ms gap")
-            lastAccrualMs = now
-            return
-        }
-
-        val seconds = (elapsed / 1000L).toInt()
-        if (seconds <= 0) return // sub-second, let it accumulate into the next flush
-
-        prefs.matchRule(host)?.let { prefs.addUsage(it.domain, seconds) }
-        // Carry the sub-second remainder so repeated flushes do not shave time off.
-        lastAccrualMs = now - (elapsed % 1000L)
+    private fun recordHost(host: String?) {
+        val interactive = power.isInteractive
+        val charge = usageClock.observe(host, SystemClock.elapsedRealtime(), prefs.today(), interactive)
+        if (charge != null) prefs.matchRule(charge.host)?.let { prefs.addUsage(it.domain, charge.seconds) }
+        currentHost = if (interactive) host else null
     }
 
-    private fun stopAccruing() {
-        if (currentHost != null) flush()
-        currentHost = null
-        lastAccrualMs = 0L
-    }
+    private fun flush() = recordHost(currentHost)
+
+    private fun stopAccruing() = recordHost(null)
 
     /**
      * @param verifyForeground re-read the active window to confirm what is really in front.
@@ -186,7 +151,13 @@ class UrlWatcherService : AccessibilityService() {
         // alone is not: opening the notification shade makes systemui the foreground package,
         // and dismissing it does not reliably produce a new state-change event for the browser,
         // so a static page would stop being counted until something else happened to fire.
-        if (verifyForeground) activePackage()?.let { foregroundPkg = it }
+        if (verifyForeground) {
+            val active = activePackage()
+            if (active != foregroundPkg) {
+                stopAccruing()
+                foregroundPkg = active
+            }
+        }
 
         val pkg = foregroundPkg
         if (pkg == null || pkg !in browsers) {

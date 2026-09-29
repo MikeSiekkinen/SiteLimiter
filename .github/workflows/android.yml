@@ -1,0 +1,152 @@
+name: Android tests and APK
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      signing_check:
+        description: Sign a release APK without publishing a release (default branch only)
+        type: boolean
+        default: false
+      release_version:
+        description: Version for the signing check (vMAJOR.MINOR.PATCH)
+        type: string
+        default: v1.0.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release source
+        if: github.event_name == 'release'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'platforms;android-37.0' 'build-tools;35.0.0' 'build-tools;36.0.0'
+      - name: Test business logic and build APKs
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SIGNING_CHECK: ${{ inputs.signing_check }}
+          CHECK_VERSION: ${{ inputs.release_version }}
+        run: |
+          version_args=()
+          if [[ -n "$RELEASE_TAG" ]]; then
+            version_args+=("-PreleaseVersion=$RELEASE_TAG")
+          elif [[ "$SIGNING_CHECK" == 'true' ]]; then
+            version_args+=("-PreleaseVersion=$CHECK_VERSION")
+          fi
+          ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" "${version_args[@]}" \
+            :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
+      - name: Test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Debug APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debug-apk-${{ github.sha }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Unsigned release APK for signing
+        if: github.event_name == 'release' || inputs.signing_check
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-release
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-and-publish:
+    needs: test-and-build
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.signing_check &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install signing tools
+        run: sdkmanager 'build-tools;36.0.0'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-release
+          path: unsigned
+      - name: Sign and verify
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_version }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          umask 077
+          export SIGNING_KEYSTORE_PATH="$RUNNER_TEMP/sitelimiter-release.jks"
+          python3 - <<'PY'
+          import base64, os, pathlib, re
+          required = ('SIGNING_KEYSTORE_BASE64', 'SIGNING_KEYSTORE_PASSWORD', 'SIGNING_KEY_ALIAS', 'SIGNING_KEY_PASSWORD')
+          if any(not os.environ.get(name) for name in required):
+              raise SystemExit('Missing release signing secrets. See docs/RELEASING.md.')
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', os.environ['RELEASE_TAG']):
+              raise SystemExit('Invalid release version')
+          pathlib.Path(os.environ['SIGNING_KEYSTORE_PATH']).write_bytes(base64.b64decode(os.environ['SIGNING_KEYSTORE_BASE64'], validate=True))
+          PY
+          mkdir -p signed
+          scripts/sign-apk.sh unsigned/app-release-unsigned.apk "signed/SiteLimiter-$RELEASE_TAG.apk"
+      - name: Signed APK and checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-release
+          path: |
+            signed/*.apk
+            signed/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach assets to the published release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" signed/*.apk signed/*.sha256 --repo "$GITHUB_REPOSITORY"
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sitelimiter-release.jks"

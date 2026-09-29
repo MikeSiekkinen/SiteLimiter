@@ -32,8 +32,8 @@ Toolchain, all already installed:
 # -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`assembleRelease` also works and is signed with the debug key, since this is
-sideload-only and never goes near Play.
+`assembleRelease` creates an unsigned release APK. The release workflow signs it
+with a permanent private key. See [release setup](docs/RELEASING.md).
 
 ## Install
 
@@ -163,3 +163,7 @@ to verify, so the safe side was chosen.
 | `Prefs.kt` | All persistence: rules, usage, snoozes, day boundary |
 | `BlockActivity.kt` | The wall, with snooze / off-for-today |
 | `MainActivity.kt` | Setup, limits, browser selection |
+
+## Continuous integration
+
+[Android tests and APK](.github/workflows/android.yml) runs the business-logic tests and builds APKs on pushes and pull requests. Publishing a release attaches a signed APK and checksum to that release. A manual signing check tests the same signing path without publishing. See [release setup](docs/RELEASING.md).
