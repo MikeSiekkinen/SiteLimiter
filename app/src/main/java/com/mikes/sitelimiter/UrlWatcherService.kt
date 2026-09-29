@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.Browser
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -13,7 +15,6 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
-import java.util.UUID
 
 /**
  * Watches the URL bar of the browsers the user selected, accrues time against the daily
@@ -39,22 +40,6 @@ class UrlWatcherService : AccessibilityService() {
     private var lastFallbackScanMs = 0L
     private var lastFallbackScanPkg: String? = null
     private var lastBlockMs = 0L
-    private data class CloseOffer(
-        val token: String,
-        val target: BlockedTab,
-        val profile: TabControlsProfile,
-        val closeLabels: Set<String>,
-        val newTabLabels: Set<String>,
-    )
-    private var closeOffer: CloseOffer? = null
-    private var cleanup: TabCleanup? = null
-    private val cleanupTick = object : Runnable {
-        override fun run() {
-            advanceCleanup()
-            if (cleanup != null) handler.postDelayed(this, 100)
-        }
-    }
-
     /** Domains already warned about today, so the nudge fires once. */
     private val warned = mutableSetOf<String>()
     private var currentDay = ""
@@ -81,7 +66,7 @@ class UrlWatcherService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        disconnectCleanup()
+        if (connected === this) connected = null
         handler.removeCallbacks(ticker)
         try {
             stopAccruing()
@@ -91,23 +76,12 @@ class UrlWatcherService : AccessibilityService() {
         super.onDestroy()
     }
 
-    override fun onInterrupt() { cancelCleanup() }
+    override fun onInterrupt() {}
 
     override fun onUnbind(intent: Intent?): Boolean {
-        disconnectCleanup()
+        if (connected === this) connected = null
         handler.removeCallbacks(ticker)
         return super.onUnbind(intent)
-    }
-
-    private fun disconnectCleanup() {
-        if (connected === this) connected = null
-        cancelCleanup()
-    }
-
-    private fun cancelCleanup() {
-        handler.removeCallbacks(cleanupTick)
-        cleanup = null
-        closeOffer = null
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -153,7 +127,6 @@ class UrlWatcherService : AccessibilityService() {
 
     /** Refresh the active URL on every accepted sample, even when a host is already known. */
     private fun tick() {
-        if (cleanup != null) return
         refreshBrowserFilter()
         rollDayIfNeeded()
 
@@ -209,15 +182,6 @@ class UrlWatcherService : AccessibilityService() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastBlockMs < BLOCK_DEBOUNCE_MS) return
         lastBlockMs = now
-        val offer = try {
-            prepareClose(host)
-        } catch (t: Throwable) {
-            // Cleanup availability must never determine whether the limit is enforced.
-            PrivacyLog.warning(PrivacyLog.Event.TAB_CLEANUP_FAILED, t)
-            null
-        }
-        closeOffer = offer
-
         if (Settings.canDrawOverlays(this)) {
             val intent = Intent(this, BlockActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -225,7 +189,7 @@ class UrlWatcherService : AccessibilityService() {
                 .putExtra(BlockActivity.EXTRA_HOST, host)
                 .putExtra(BlockActivity.EXTRA_USED, usedSeconds)
                 .putExtra(BlockActivity.EXTRA_LIMIT, rule.limitSeconds)
-                .putExtra(BlockActivity.EXTRA_CLOSE_TOKEN, offer?.token)
+                .putExtra(BlockActivity.EXTRA_BROWSER, tracker.browserPackage)
             try {
                 startActivity(intent)
                 return
@@ -237,86 +201,7 @@ class UrlWatcherService : AccessibilityService() {
         }
 
         Toast.makeText(this, "${rule.domain}: daily limit reached", Toast.LENGTH_LONG).show()
-        if (offer == null || !beginCleanup(offer.token)) performGlobalAction(GLOBAL_ACTION_HOME)
-    }
-
-    // ---------------- closing the blocked tab ----------------
-
-    private fun prepareClose(host: String): CloseOffer? {
-        val pkg = tracker.browserPackage ?: return null
-        val root = activeRoot() ?: return null
-        try {
-            if (root.packageName?.toString() != pkg) return null
-            val profile = TabControlsProfile.forBrowser(pkg)
-            val closeLabels = BrowserTabUi.labels(this, pkg, profile.closeStrings)
-            val newTabLabels = BrowserTabUi.labels(this, pkg, profile.newTabStrings)
-            BrowserTabUi(root, pkg, profile, closeLabels, newTabLabels) { false }.use { ui ->
-                val page = ui.observation
-                // A hidden toolbar permits an offer, but the operation must obtain a
-                // fresh matching address before it is allowed to touch browser controls.
-                if (page.editing || (page.address != null && page.host != host)) return null
-                return CloseOffer(UUID.randomUUID().toString(),
-                    BlockedTab(pkg, host, root.windowId, page.address), profile, closeLabels, newTabLabels)
-            }
-        } finally {
-            recycleQuietly(root)
-        }
-    }
-
-    private fun beginCleanup(token: String): Boolean {
-        val offer = closeOffer?.takeIf { it.token == token } ?: return false
-        if (cleanup != null) return true // A repeated button press must not restart it.
-        return try {
-            stopAccruing()
-            cleanup = TabCleanup(offer.target, SystemClock.elapsedRealtime())
-            // The activity finishes after making this request; sample after it yields.
-            handler.post(cleanupTick)
-            true
-        } catch (t: Throwable) {
-            cancelCleanup()
-            PrivacyLog.warning(PrivacyLog.Event.TAB_CLEANUP_FAILED, t)
-            false
-        }
-    }
-
-    private fun advanceCleanup() {
-        val operation = cleanup ?: return
-        val offer = closeOffer ?: return cancelCleanup()
-        var foregroundPackage: String? = null
-        try {
-            if (!power.isInteractive) return cancelCleanup()
-            val root = activeRoot()
-            try {
-                foregroundPackage = root?.packageName?.toString()
-                BrowserTabUi(root, offer.target.browser, offer.profile, offer.closeLabels, offer.newTabLabels) {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                }.use { ui ->
-                    operation.advance(ui, SystemClock.elapsedRealtime(),
-                        offer.target.browser in prefs.browsers() && prefs.blockingRule(offer.target.host) != null,
-                        packageName)
-                }
-            } finally {
-                recycleQuietly(root)
-            }
-            operation.result?.let { finishCleanup(it, foregroundPackage) }
-        } catch (t: Throwable) {
-            PrivacyLog.warning(PrivacyLog.Event.TAB_CLEANUP_FAILED, t)
-            finishCleanup(CleanupResult.FAILED, foregroundPackage)
-        }
-    }
-
-    private fun finishCleanup(result: CleanupResult, foregroundPackage: String?) {
-        val targetPackage = closeOffer?.target?.browser
-        cancelCleanup()
-        // Accrual was stopped before cleanup; give Android time to process HOME.
-        lastBlockMs = if (result == CleanupResult.CANCELLED) 0L else SystemClock.elapsedRealtime()
-        if (result == CleanupResult.FAILED) {
-            Toast.makeText(this, R.string.tab_cleanup_failed, Toast.LENGTH_LONG).show()
-        }
-        if (result != CleanupResult.CANCELLED && foregroundPackage != null &&
-            (foregroundPackage == targetPackage || foregroundPackage == packageName)) {
-            performGlobalAction(GLOBAL_ACTION_HOME)
-        }
+        openBlankTabAndGoHome(this, tracker.browserPackage)
     }
 
     // ---------------- URL extraction ----------------
@@ -398,17 +283,30 @@ class UrlWatcherService : AccessibilityService() {
     }
 
     companion object {
-        // Private process-local bridge: no exported receiver, URL intent, or persisted tab.
+        // Only used to stop accounting and debounce the transition to Home.
         private var connected: UrlWatcherService? = null
 
-        internal fun closeBlockedTab(token: String?): Boolean =
-            token != null && connected?.beginCleanup(token) == true
-
-        internal fun dismissBlock(token: String?) {
-            val service = connected ?: return
-            if (token != null && service.cleanup == null && service.closeOffer?.token == token) {
-                service.closeOffer = null
+        internal fun openBlankTabAndGoHome(context: Context, browser: String?) {
+            connected?.let { service ->
+                service.lastBlockMs = SystemClock.elapsedRealtime()
+                service.stopAccruing()
             }
+            try {
+                // Bypass the browser's URL dispatcher so it cannot race Home.
+                val intent = browser?.let { context.packageManager.getLaunchIntentForPackage(it) }
+                if (intent != null) {
+                    intent.action = Intent.ACTION_VIEW
+                    intent.data = Uri.parse("about:blank")
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true)
+                    context.startActivity(intent)
+                }
+            } catch (t: RuntimeException) {
+                PrivacyLog.warning(PrivacyLog.Event.BLANK_TAB_FAILED, t)
+            }
+            PrivacyLog.info(PrivacyLog.Event.BROWSER_EXIT_HOME)
+            context.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
         }
 
         private const val TICK_MS = 5_000L

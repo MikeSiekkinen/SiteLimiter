@@ -22,9 +22,9 @@ class BlockActivity : AppCompatActivity() {
     private lateinit var prefs: Prefs
     private var domain = ""
     private var host = ""
-    private var closeToken: String? = null
     private var closing = false
     private var optionsOpen = false
+    private var browser: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() {
@@ -41,7 +41,7 @@ class BlockActivity : AppCompatActivity() {
         prefs = Prefs(this)
         readTarget(intent)
 
-        binding.btnClose.setOnClickListener { closeTabAndGoHome() }
+        binding.btnClose.setOnClickListener { openBlankTabAndGoHome() }
 
         binding.btnOptions.setOnClickListener {
             val rule = prefs.blockingRule(host)
@@ -61,7 +61,7 @@ class BlockActivity : AppCompatActivity() {
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = closeTabAndGoHome()
+            override fun handleOnBackPressed() = openBlankTabAndGoHome()
         })
     }
 
@@ -78,7 +78,6 @@ class BlockActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(refresh)
-        if (isFinishing && !closing) UrlWatcherService.dismissBlock(closeToken)
         super.onDestroy()
     }
 
@@ -91,7 +90,7 @@ class BlockActivity : AppCompatActivity() {
 
     private fun readTarget(intent: Intent) {
         host = intent.getStringExtra(EXTRA_HOST) ?: intent.getStringExtra(EXTRA_DOMAIN).orEmpty()
-        closeToken = intent.getStringExtra(EXTRA_CLOSE_TOKEN)
+        browser = intent.getStringExtra(EXTRA_BROWSER)
         closing = false
         optionsOpen = false
     }
@@ -122,27 +121,23 @@ class BlockActivity : AppCompatActivity() {
         renderCurrentRule()
     }
 
-    private fun closeTabAndGoHome() {
+    private fun openBlankTabAndGoHome() {
         if (closing) return
         closing = true
+        PrivacyLog.info(PrivacyLog.Event.BROWSER_EXIT_CLICK)
         handler.removeCallbacks(refresh)
         if (prefs.blockingRule(host) == null) {
-            UrlWatcherService.dismissBlock(closeToken)
             finish()
             return
         }
-        if (UrlWatcherService.closeBlockedTab(closeToken)) {
-            // Reveal the existing browser task. The service closes its tab, then goes home.
-            finish()
-            return
-        }
-        Toast.makeText(this, R.string.tab_cleanup_failed, Toast.LENGTH_LONG).show()
-        startActivity(
-            Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_HOME)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        UrlWatcherService.openBlankTabAndGoHome(this, browser?.takeIf { it in prefs.browsers() })
+        finishWithoutAnimation()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun finishWithoutAnimation() {
         finish()
+        overridePendingTransition(0, 0)
     }
 
     companion object {
@@ -150,7 +145,7 @@ class BlockActivity : AppCompatActivity() {
         const val EXTRA_HOST = "host"
         const val EXTRA_USED = "used"
         const val EXTRA_LIMIT = "limit"
-        internal const val EXTRA_CLOSE_TOKEN = "close_token"
+        internal const val EXTRA_BROWSER = "browser"
 
         fun formatMinutes(seconds: Int): String {
             val totalMinutes = seconds / 60
