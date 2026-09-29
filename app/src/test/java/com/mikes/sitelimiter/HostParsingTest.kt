@@ -19,8 +19,8 @@ class HostParsingTest {
 
     @Test
     fun `chrome shows a full url with a query string`() {
-        // Verbatim from com.android.chrome:id/url_bar during a Reddit JS challenge redirect.
-        val actual = "reddit.com/?solution=d5020b960398dee3&js_challenge=1&jsc_token=7afd7253"
+        // Synthetic example of a Chrome URL containing a JS challenge query.
+        val actual = "reddit.com/?solution=synthetic-solution&js_challenge=1&jsc_token=synthetic-token"
         assertEquals("reddit.com", Browsers.hostFromBarText(actual))
     }
 

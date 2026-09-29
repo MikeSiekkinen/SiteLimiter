@@ -10,7 +10,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
@@ -31,7 +30,8 @@ class UrlWatcherService : AccessibilityService() {
     private val prefs by lazy { Prefs(this) }
     private val power by lazy { getSystemService(Context.POWER_SERVICE) as PowerManager }
 
-    private var browsers: Set<String> = Browsers.DEFAULT_PACKAGES
+    private var browsers: Set<String> = emptySet()
+    private var filteredBrowsers: Set<String>? = null
 
     /** Package of the window currently in front. */
     private var foregroundPkg: String? = null
@@ -53,7 +53,7 @@ class UrlWatcherService : AccessibilityService() {
             try {
                 tick(verifyForeground = true)
             } catch (t: Throwable) {
-                Log.w(TAG, "tick failed", t)
+                PrivacyLog.warning(PrivacyLog.Event.TICK_FAILED, t)
             }
             handler.postDelayed(this, TICK_MS)
         }
@@ -61,13 +61,11 @@ class UrlWatcherService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        browsers = prefs.browsers()
+        refreshBrowserFilter()
         rollDayIfNeeded()
         handler.removeCallbacks(ticker)
         handler.post(ticker)
-        // browsers is the candidate package list, most of which are typically not installed;
-        // saying "watching N browsers" implied N real ones.
-        Log.i(TAG, "connected, ${browsers.size} candidate browser packages configured")
+        PrivacyLog.info(PrivacyLog.Event.CONNECTED)
     }
 
     override fun onDestroy() {
@@ -75,7 +73,7 @@ class UrlWatcherService : AccessibilityService() {
         try {
             stopAccruing()
         } catch (t: Throwable) {
-            Log.w(TAG, "shutdown flush failed", t)
+            PrivacyLog.warning(PrivacyLog.Event.FLUSH_FAILED, t)
         }
         super.onDestroy()
     }
@@ -88,21 +86,21 @@ class UrlWatcherService : AccessibilityService() {
         try {
             handleEvent(event)
         } catch (t: Throwable) {
-            Log.w(TAG, "event handling failed", t)
+            PrivacyLog.warning(PrivacyLog.Event.EVENT_FAILED, t)
         }
     }
 
     private fun handleEvent(event: AccessibilityEvent) {
+        refreshBrowserFilter()
         val pkg = event.packageName?.toString() ?: return
+        if (pkg !in browsers || activePackage() != pkg) return
 
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != foregroundPkg) {
-            // Left whatever we were on. Bank the time before switching context.
+        if (pkg != foregroundPkg) {
+            // The transition time is unknown; discard the unobserved interval.
             stopAccruing()
             foregroundPkg = pkg
         }
 
-        if (pkg !in browsers) return
-        foregroundPkg = pkg
 
         // Content-change events fire constantly while a page renders; sample them.
         val now = SystemClock.elapsedRealtime()
@@ -114,10 +112,20 @@ class UrlWatcherService : AccessibilityService() {
         val host = extractHost(pkg)
         if (host != null && host != currentHost) {
             recordHost(host)
-            if (BuildConfig.DEBUG) Log.d(TAG, "host -> $host")
         }
         // The event already told us the foreground package, so skip the extra window lookup.
         tick(verifyForeground = false)
+    }
+
+    private fun refreshBrowserFilter() {
+        browsers = prefs.browsers()
+        if (filteredBrowsers == browsers) return
+        val info = serviceInfo ?: return
+        // Android interprets null/empty package filters as "all apps". Use our own package
+        // when watching nothing, and reject it in handleEvent without reading its content.
+        info.packageNames = browsers.ifEmpty { setOf(packageName) }.sorted().toTypedArray()
+        serviceInfo = info
+        filteredBrowsers = browsers
     }
 
     // ---------------- time accounting ----------------
@@ -138,7 +146,7 @@ class UrlWatcherService : AccessibilityService() {
      * Costs a binder round trip, so only the timer does it; events carry their own package.
      */
     private fun tick(verifyForeground: Boolean) {
-        browsers = prefs.browsers()
+        refreshBrowserFilter()
         rollDayIfNeeded()
 
         // No accessibility events arrive while the screen is off, so check it explicitly.
@@ -165,8 +173,12 @@ class UrlWatcherService : AccessibilityService() {
             return
         }
 
-        // Re-acquire the host after any gap that cleared it.
-        if (currentHost == null) currentHost = extractHost(pkg)
+        // Poll even after filtering non-browser events: a static page may not emit a new
+        // event after the user switches back from another app or the notification shade.
+        val detected = extractHost(pkg)
+        if (detected != null && detected != currentHost) {
+            recordHost(detected)
+        }
         val host = currentHost ?: return
 
         flush()
@@ -214,7 +226,7 @@ class UrlWatcherService : AccessibilityService() {
             } catch (t: Throwable) {
                 // Background activity starts can still be refused. Fall through rather than
                 // letting the limit silently do nothing.
-                Log.w(TAG, "block screen refused", t)
+                PrivacyLog.warning(PrivacyLog.Event.BLOCK_FAILED, t)
             }
         }
 
@@ -236,7 +248,7 @@ class UrlWatcherService : AccessibilityService() {
     private fun activeRoot(): AccessibilityNodeInfo? = try {
         rootInActiveWindow
     } catch (t: Throwable) {
-        Log.w(TAG, "rootInActiveWindow failed", t)
+        PrivacyLog.warning(PrivacyLog.Event.ROOT_FAILED, t)
         null
     }
 
@@ -316,7 +328,6 @@ class UrlWatcherService : AccessibilityService() {
     }
 
     companion object {
-        private const val TAG = "SiteLimiter"
         private const val TICK_MS = 5_000L
 
         /** Largest gap a single flush will bank. Anything more means the device slept. */
