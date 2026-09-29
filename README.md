@@ -135,24 +135,11 @@ grep -o 'resource-id="[^"]*url[^"]*"' w.xml
 
 Then add whatever it prints to `urlBarIds()` in `app/src/main/java/com/mikes/sitelimiter/Browsers.kt`.
 
-Live logs. Host changes and discarded sleep gaps are logged at debug level, and are
-compiled out of release builds so your browsing never lands in logcat on a build you
-use day to day:
+Technical diagnostics use fixed event identifiers and stack-frame code locations. Domains, URLs, browser selection, usage and exception messages are never logged, including in debug builds. There is no remote logging. See [Privacy over all](docs/PRIVACY.md).
 
-```sh
-adb logcat -s SiteLimiter
-```
+## Accessibility boundaries
 
-## A deliberate non-hardening
-
-The accessibility service does not restrict `packageNames` to the browsers you tick, so
-it receives window events from every app. It never *reads content* from anything but a
-watched browser, and nothing leaves the device — but the events do arrive.
-
-Restricting it would be real hardening. It is left off because knowing you have *left*
-the browser depends on seeing events from non-browsers; narrowing the filter risks the
-app happily counting Reddit time while you are in another app. That trade needs a device
-to verify, so the safe side was chosen.
+The service subscribes only to selected browser packages. An empty selection does not subscribe to all apps. A five-second foreground check observes the active package name so leaving a browser still stops accrual; it does not inspect other apps' text. Browser polling recovers static pages after switching back. Android still grants the service a broad capability to retrieve window content; the package filter reduces delivered events and the code restricts how that capability is used.
 
 ## Source map
 

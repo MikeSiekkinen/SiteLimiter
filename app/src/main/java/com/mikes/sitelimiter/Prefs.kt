@@ -52,6 +52,7 @@ class Prefs(ctx: Context) {
     fun deleteRule(domain: String) {
         saveRules(rules().filter { it.domain != domain })
         sp.edit()
+            .apply { sp.all.keys.filter { it.startsWith("usage:") && it.endsWith(":$domain") }.forEach { remove(it) } }
             .remove(keySnooze(domain))
             .remove(keyOff(domain))
             .remove(keyUsage(today(), domain))
@@ -84,12 +85,20 @@ class Prefs(ctx: Context) {
         sp.edit().remove(keyUsage(today(), domain)).apply()
     }
 
-    /** Drops usage counters from previous budget days so the file cannot grow forever. */
+    /** Retain only the current day's counters and still-active exceptions for existing rules. */
     fun pruneOldUsage() {
-        val today = today()
-        val stale = sp.all.keys.filter { it.startsWith("usage:") && !it.startsWith("usage:$today:") }
-        if (stale.isEmpty()) return
-        sp.edit().apply { stale.forEach { remove(it) } }.apply()
+        val day = today()
+        val now = System.currentTimeMillis()
+        val domains = rules().map { it.domain }.toSet()
+        val stale = sp.all.keys.filter { key ->
+            when {
+                key.startsWith("usage:") -> !key.startsWith("usage:$day:") || key.substringAfterLast(':') !in domains
+                key.startsWith("snooze:") -> key.removePrefix("snooze:") !in domains || sp.getLong(key, 0) <= now
+                key.startsWith("off:") -> key.removePrefix("off:") !in domains || sp.getString(key, null) != day
+                else -> false
+            }
+        }
+        if (stale.isNotEmpty()) sp.edit().apply { stale.forEach { remove(it) } }.apply()
     }
 
     // ---------------- snooze / off ----------------
